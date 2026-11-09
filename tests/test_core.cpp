@@ -18,24 +18,26 @@ static void multiply(const double a[4],const double b[4],double o[4]) {
 static void geometry() {
   pp::Alignment a=identity(); assert(a.valid());
   double angle=20/pp::DEG, q[4]={std::cos(angle/2),0,std::sin(angle/2),0};
-  pp::Vec up; double sag,lat;
-  assert(pp::upFromQuaternion(q,a,up)&&pp::tilts(up,sag,lat)); near(sag,20); near(lat,0);
+  pp::Vec up; double sag;
+  assert(pp::upFromQuaternion(q,a,up)&&pp::sagittalTilt(up,sag)); near(sag,20);
   double yaw[4]={std::cos(1.2),0,0,std::sin(1.2)},rotated[4]; multiply(yaw,q,rotated);
-  assert(pp::upFromQuaternion(rotated,a,up)&&pp::tilts(up,sag,lat)); near(sag,20);
+  assert(pp::upFromQuaternion(rotated,a,up)&&pp::sagittalTilt(up,sag)); near(sag,20);
   for(double& v:rotated) v=-v;
-  assert(pp::upFromQuaternion(rotated,a,up)&&pp::tilts(up,sag,lat)); near(sag,20);
-  assert(!pp::tilts({0,1,0},sag,lat)); assert(!pp::tilts({1,0,0},sag,lat));
+  assert(pp::upFromQuaternion(rotated,a,up)&&pp::sagittalTilt(up,sag)); near(sag,20);
+  assert(!pp::sagittalTilt({0,1,0},sag)); // Sagittal projection itself undefined.
+  assert(pp::sagittalTilt({1,0,0},sag));near(sag,-90); // Lateral singularity is irrelevant.
+  assert(pp::sagittalTilt({0.99,0,0.1},sag));
+  assert(!pp::sagittalTilt({0.1,0.99,0.1},sag));
   q[0]=std::numeric_limits<double>::quiet_NaN(); assert(!pp::upFromQuaternion(q,a,up));
   assert(pp::makeAlignment("+Y","+Z",a)); assert(a.valid());
   up=a.apply({0,1,0}); near(up.z,1); near(up.x,0); near(up.y,0);
   up=a.apply({0,0,1}); near(up.x,-1);
   assert(!pp::makeAlignment("+Y","-Y",a)); assert(!pp::makeAlignment("Y","+Z",a));
   near(pp::wrap(359),-1); near(pp::wrap(-359),1);
-  double tilt[6]={35,25,20,0,0,0},out[4]; pp::regions(tilt,out); near(out[0],10); near(out[1],5);
+  double tilt[3]={35,25,20},out[2]; pp::regions(tilt,out); near(out[0],10); near(out[1],5);
   for(int i=0;i<3;i++) tilt[i]-=20;
   pp::regions(tilt,out); near(out[0],10); near(out[1],5);
-  // Sideways motion is measured but does not enter the sagittal alert input.
-  tilt[3]=15; pp::regions(tilt,out); near(out[2],15); near(out[0],10);
+
 }
 static void alerts() {
   pp::Settings s; pp::AlertLogic a; double d[2]={8,0};
@@ -62,14 +64,24 @@ static void settings() {
       "set 8 3 9 4 2000 extra","set 8 3 9 4","set 8x 3 9 4 2000"}) assert(!parse(bad,s));
 }
 static void calibration() {
-  pp::Calibration c; double t[6]={179.9,0,0,0,0,0},r[4]={179.9,0,0,0};
+  pp::Calibration c; double t[3]={179.9,0,0},r[2]={179.9,0};
   for(uint32_t i=0;i<=520;i++) {
     t[0]=(i%2)?-179.9:179.9; r[0]=t[0];
-    bool done=c.add(i*10,t,r,true); if(i<500) assert(!done);
+    bool done=c.add(i*10,t,r,true); if(i<200) assert(!done);
+    else assert(done);
   }
-  double b[4];c.baseline(b); assert(std::fabs(std::fabs(b[0])-180)<0.01);
+  double b[2];c.baseline(b); assert(std::fabs(std::fabs(b[0])-180)<0.01);
+  double sensor[3];c.sensorBaseline(sensor);assert(std::fabs(std::fabs(sensor[0])-180)<0.01);
   assert(!c.add(5300,t,r,false)); assert(c.count==0);
-  c.add(5400,t,r,true); t[0]+=1.1; assert(!c.add(5410,t,r,true)); assert(c.count==0);
+  // Small wearable sway is accepted, while larger changes still reset capture.
+  pp::Calibration sway;double mild[3]={},region[2]={};
+  bool complete=false;
+  for(uint32_t i=0;i<=200;i++) {
+    mild[0]=(i%2)?0.8:-0.8;region[0]=mild[0];
+    complete=sway.add(i*10,mild,region,true);
+  }
+  assert(complete);
+  c.add(5400,t,r,true); t[0]+=2.1; assert(!c.add(5410,t,r,true)); assert(c.count==0);
 }
 static void timing() {
   assert(!pp::sampleGap(100,0,false)); assert(!pp::sampleGap(15000,0,true));
@@ -119,8 +131,8 @@ static void actualVQF() {
   VQF filter(1.0/104); const vqf_real_t g[3]={0,0,0},acc[3]={0,0,9.80665};
   for(int i=0;i<2080;i++) filter.update(g,acc);
   assert(filter.getRestDetected()); vqf_real_t q[4];filter.getQuat6D(q);
-  pp::Vec up;double sag,lat; assert(pp::upFromQuaternion(q,identity(),up));
-  assert(pp::tilts(up,sag,lat));near(sag,0,1e-4);near(lat,0,1e-4);
+  pp::Vec up;double sag; assert(pp::upFromQuaternion(q,identity(),up));
+  assert(pp::sagittalTilt(up,sag));near(sag,0,1e-4);
   // Bias present at rest: test official estimator, not a mock of its API.
   filter.resetState(); const vqf_real_t biased[3]={0.005,-0.004,0.003};
   for(int i=0;i<3120;i++) filter.update(biased,acc);

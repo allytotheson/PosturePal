@@ -1,3 +1,3 @@
 #pragma once
 #include "Wire.h"
-struct Adafruit_DRV2605 {bool begin(TwoWire*) {return true;}};
+struct Adafruit_DRV2605 {bool begin(TwoWire* wire) {wire->begin();return true;}};

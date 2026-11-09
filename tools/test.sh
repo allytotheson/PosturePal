@@ -9,3 +9,11 @@ ${CXX:-c++} -std=c++11 -O2 -Wall -Wextra -Werror -pedantic -fsanitize=address,un
 ${CXX:-c++} -std=c++11 -O2 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined \
   -I tests/fakes -I firmware/PosturePal tests/test_firmware.cpp firmware/PosturePal/vqf.cpp -o "$test_dir/firmware"
 "$test_dir/firmware"
+
+# Exercise the M4's single-precision VQF path as well as the original double path.
+${CXX:-c++} -std=c++11 -O2 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined \
+  -DVQF_SINGLE_PRECISION -I firmware/PosturePal tests/test_core.cpp firmware/PosturePal/vqf.cpp -o "$test_dir/core-float"
+"$test_dir/core-float"
+${CXX:-c++} -std=c++11 -O2 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined \
+  -DVQF_SINGLE_PRECISION -I tests/fakes -I firmware/PosturePal tests/test_firmware.cpp firmware/PosturePal/vqf.cpp -o "$test_dir/firmware-float"
+"$test_dir/firmware-float"

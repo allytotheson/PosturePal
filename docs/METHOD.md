@@ -62,7 +62,8 @@ arbitrary mounting errors, unobserved heading, or sensor-to-skin movement.
 The firmware uses the verified API, not an Arduino wrapper:
 
 ```cpp
-VQFParams params;                      // default tauAcc=3 s, rest/motion bias on
+VQFParams params;                      // rest/motion bias on
+params.tauAcc = 1.0;                   // stronger gravity correction; default is 3 s
 params.magDistRejectionEnabled = false;
 VQF filter(params, 1.0/104.0);
 // For each new, coherent measurement, SI units:
@@ -104,16 +105,16 @@ uS = transpose(R(q)) * [0,0,1]
    = [2(xz-wy), 2(yz+wx), w²-x²-y²+z²] / ||q||²
 uB = A_i * uS
 sagittal_i = atan2(-uB.x, uB.z)
-lateral_i  = atan2( uB.y, uB.z)
 ```
 
 The sensor measures upward specific force while stationary, not the downward
 gravity-force vector; the reference here is **up**. Sagittal tilt is positive
-for forward bending under these axes. The lateral formula is positive for a
-rightward segment tilt; verify signs with a fixture. Angles are converted from
-radians to degrees only after extraction. Both relevant vertical-plane projections
-must have norm at least 0.174 (approximately sin 10°); near-horizontal/singular
-orientations outside this seated envelope invalidate the measurement.
+for forward bending under these axes; verify signs with a fixture. Angles are
+converted from radians to degrees only after extraction. Only the sagittal
+projection, hypot(uB.x,uB.z), must have norm at least 0.174. An undefined
+lateral projection does not invalidate a usable sagittal angle. If gravity points
+nearly along the body-left axis, the sagittal projection itself becomes undefined
+and monitoring still faults. No lateral angle is calculated.
 
 The default identity alignment is intentionally unverified. `axes <headward>
 <outward>` builds A_i for all three identically mounted boards: row z=headward,
@@ -158,8 +159,7 @@ lower = wrap(thetaT12 - thetaL5)
 deviation_region = wrap(current_region - circularMeanNeutral_region)
 ```
 
-Compute lateral regional differences and baselines in the same way, but log them
-only. The aggregate T3–L5 sagittal deviation is diagnostic, not a third trigger.
+Only the two sagittal regional differences and baselines are computed.
 Calibration averages signed angles with sine/cosine sums, avoiding the ±180° mean
 discontinuity. A stable nonzero regional baseline is normal.
 
@@ -196,10 +196,12 @@ invent a variable-dt overload of its API. Read-time skew of 12 ms alone correspo
 to about 0.36° at 30°/s, before filter/mounting errors; true conversion phase can
 add uncertainty.
 
-Calibration gates on all rest flags, approximately 1 g acceleration, and a
-five-second 1° peak-to-peak envelope in all six projected tilts. These checks reject
+Calibration gates on measured angular speed at or below 5 degrees/second,
+acceleration norm within 0.10 g of gravity, and a two-second 2-degree peak-to-peak
+envelope in all three sagittal tilts. VQF's strict bias-estimation rest flag does
+not gate calibration; the filter's bias-estimation behavior itself is unchanged. These checks reject
 many moving calibrations but cannot prove the user's posture is neutral, detect
-all slow motion, or validate garment attachment. Ten seconds is an initial settling
+all slow motion, or validate garment attachment. Three seconds is an initial settling
 interval, not a guaranteed thermal/bias convergence time.
 
 Each region times its own strictly above-trigger sagittal deviation. Equality to

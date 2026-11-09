@@ -1,5 +1,210 @@
 # Verification record
 
+## Identified actuator drive configuration, 2026-11-09
+
+The user identified Adafruit motor 1201 and DRV2605L breakout 2305 and supplied
+a PCB image with driver supply labeled 3V3. Configured ERM open-loop signed RTP,
+enabled supply compensation, set/verifed OD_CLAMP=138 and raised alert RTP from
+32 to 127. TI equation 6 gives nominal full-scale average output 2.979 V. The
+actuator datasheet rates 3.0 V (2.5–3.8 V operating range; <=2.3 V starting voltage).
+The clamp is checked before motor start and in periodic verification. No posture
+threshold or continuous-alert timing changed; sensor-only mode still bypasses it.
+
+All four sanitizer suites passed. Sketch tests assert clamp/control configuration,
+continuous RTP=127, zero/standby recovery, and fault-stop on a corrupted clamp.
+Both builds passed: M4 105660 bytes flash; nRF52840 122388 bytes flash and 15844
+bytes static RAM. No upload, measured voltage, current or physical startup test
+was performed. Calculated register settings do not establish actuator performance.
+
+## Motor-mode clarity and full-scale diagnostics, 2026-11-09
+
+Initialization now identifies default hardware motor mode explicitly. Hyphenated
+motor-on/off input produces a syntax reminder without changing mode or restarting
+hardware. Full-scale IMU faults now identify sensor/channel, accel versus gyro,
+axis and signed raw value; the +/-32000 guard remains unchanged.
+All four sanitizer suites pass, including positive acceleration and negative gyro
+range faults, motor shutdown and rejected hyphenated command without a new event.
+Both builds pass: M4 105100 bytes flash; nRF52840 121588 bytes flash and 15844
+bytes static RAM. No upload or physical actuator test was performed.
+
+## Initialization bus diagnostics, 2026-11-08
+
+IMU initialization errors now distinguish mux selection failure from sensor
+begin failure and include channel/address. Added fault-only scan across channels
+0–7, addresses 0x6A/0x6B, at 100/400 kHz. It reads WHO_AM_I, reports expected
+LSM6DSOX identity 0x6C and restores 400 kHz. Checks are spread across loop passes.
+Tests verify correct identity, one missing branch, upstream mux failure and clock
+restoration. All four host sanitizer runs and M4 build passed (104932 bytes flash).
+No scan of physical hardware or upload was performed.
+
+## Explicit sensor-only test mode, 2026-11-08
+
+Added `motor off` / `motor on`, accepted even from FAULT. Sensor-only entry makes
+one best-effort stop attempt, then bypasses all motor initialization, start/stop,
+periodic verification and fault-stop transactions while retaining IMU validation.
+It reinitializes the sensors; the mode survives retry but resets on reboot.
+Hardware-required mode remains the startup default. Compact buzz output in
+sensor-only mode represents the alert decision; status marks the driver DISABLED.
+
+All four sanitizer suites pass. Tests simulate an absent motor, calibration,
+alert/recovery without any driver transactions after entry, retry preserving the
+opt-out, failure when hardware mode is reenabled without a driver, and successful
+hardware-mode retry when communication is restored. M4 build passed at 103172
+bytes flash. No upload or physical sensor-only run was performed.
+
+## Gravity correction and return-to-neutral diagnostics, 2026-11-08
+
+Wearer logs showed a lower-region offset that remained outside recovery limits
+while the user attempted to return to neutral. Those regional readings alone
+cannot distinguish filter settling/gyro error, sensor assignment, actual sensor
+orientation changes or attachment movement.
+
+VQF tauAcc is now 1 second, previously 3 seconds: stronger accelerometer/gravity
+correction while retaining both bias-estimation paths. This also increases
+sensitivity to translational acceleration and is a tuning change, not a proven
+hardware drift fix. No automatic baseline tracking was introduced.
+
+Calibration now saves each sensor's mean neutral tilt for diagnostics as well
+as the existing two regional baselines. Explicit sense reports per-sensor VQF
+tilt, change from neutral, instantaneous acceleration-derived tilt, a quiet flag,
+filter-minus-gravity difference, gyro magnitude, rest flag and mean acquisition
+rate since initialization. Its three rows are scheduled across separate loops.
+The default one-second compact display is unchanged.
+
+All four sanitizer runs passed. A sketch simulation adds 1 degree/second gyro
+bias to L5, holds neutral for 30 seconds, sustains a slouch for 20 seconds without
+baseline adaptation, returns to neutral and checks motor shutdown, then holds
+30 seconds and checks both residual regional deviations below 1 degree.
+This uses ideal acceleration and consistent fixture angles, not real mounting,
+sensor temperature changes or translational acceleration. M4 build passed at
+102380 bytes flash. No upload or hardware return-repeatability test was performed.
+
+## Wearable calibration tolerance, 2026-11-08
+
+A hardware run repeatedly restarted its capture and timed out. Earlier progress
+messages did not distinguish rest-flag, acceleration or angle-sway rejection, so
+the screenshot alone does not establish the exact failing condition.
+
+Calibration no longer requires VQF's bias-estimator rest flag. It requires each
+sensor's raw gyro vector magnitude at or below 5 degrees/second and acceleration
+norm within 10% of gravity, plus a 2-degree (previously 1-degree) sagittal
+peak-to-peak envelope. The 3-second settle, 2-second window, 200-frame minimum,
+hardware checks and timeout remain. There is no forced acceptance at timeout.
+Text-only progress names sensor motion/acceleration blockers or angle-window
+resets. Explicit status includes CAL_INFO limits and the last blocker.
+
+All four sanitizer runs passed. Regression coverage includes 1.6-degree sway
+acceptance, 2.1-degree sway rejection, calibration with small raw gyro offset,
+rejection of 10 degrees/second motion and recovery once motion stops. M4 build
+passed at 101132 bytes flash. No upload or physical baseline-quality validation
+was performed; new limits are wearable tuning values.
+
+## Sagittal-only angle validity, 2026-11-08
+
+Removed the lateral projection guard, angle calculation, regional differences
+and calibration baselines. Calibration checks three sagittal tilts and averages
+two sagittal regions. An undefined lateral projection can no longer cause a
+geometry fault or block calibration. The sagittal projection itself must remain
+finite with magnitude at least 0.174; otherwise forward/backward tilt is
+unobservable and a sagittal-specific fault stops monitoring.
+
+Core tests accept an exactly lateral-singular but sagittal-valid vector and
+still reject a sagittal-singular vector. The actual sketch simulation moves all
+IMUs to 85 degrees forward, remains geometry-valid, and completes recalibration
+there. Core/sketch suites pass under sanitizers in both precision configurations.
+Both builds pass: M4 100260 bytes flash; nRF52840 112644 bytes flash and 15692
+bytes static RAM. No upload or physical validation was performed.
+
+## I2C clock restoration, 2026-11-08
+
+Hardware reported `IMU gap imu=2 gap_us=16153 limit_us=16000` during settling.
+Inspection of installed BusIO 1.17.4 showed Adafruit_I2CDevice::begin calls
+Wire.begin; SAMD 1.7.17 Wire.begin resets to TWI_CLOCK=100000. The firmware's
+original 400 kHz setting was therefore overwritten during device initialization.
+Initialization now reapplies 400 kHz after all driver begins, before startup
+flushing and sampling. Retry uses the same path. The 16 ms gap guard is unchanged.
+
+The fake device begins now model this clock reset, and sketch tests assert
+400 kHz after boot and retry. All four host sanitizer runs pass; M4 build passes
+at 105732 bytes flash. No upload or physical bus measurement was performed, so
+resolution of the hardware gap still needs confirmation after flashing.
+
+## Compact serial output, 2026-11-08
+
+Automatic angle/sensor values are suppressed before calibration and while paused
+or faulted. Calibration prints text-only progress. In MONITORING and ALERT, one
+line per second reports only upper_deg, lower_deg and the continuous-drive buzz
+request. Automatic numeric BASELINE and DATA/SENSE dumps were removed. Manual
+status retains troubleshooting details; manual sense reports sensor vectors/tilts.
+Sampling, fault limits, alert thresholds and continuous drive are unchanged.
+
+Both precision configurations passed core/sketch sanitizer tests, including three
+readings in a three-second monitoring interval, no readings during setup,
+calibration, pause or fault, and explicit sense access. Target builds passed:
+M4 105700 bytes flash; nRF52840 118020 bytes flash and 15868 bytes static RAM.
+No upload or hardware execution was performed.
+
+## Repeated M4 sampling-gap investigation, 2026-11-08
+
+After correcting all three IMU addresses to 0x6A, hardware screenshots showed
+readings followed by a latched acquisition-gap fault, including after retry.
+This establishes that initialization succeeds but the original 16 ms polling
+guard is being crossed; it does not identify which operation caused the delay.
+
+The M4 build now defines upstream `VQF_SINGLE_PRECISION` globally for C++ units.
+VQF's internal Butterworth filter state remains double precision as upstream
+requires. The geometry helper accepts either float or double quaternion arrays.
+Automatic SENSE formatting is spread over three loop passes, one IMU per pass.
+The sampling limit and fixed filter period were not relaxed. Firmware identifier
+is now `feather-v3`; status reports VQF precision and timing maxima, and gap faults
+include the sensor index and actual gap duration.
+
+All four sanitizer-enabled host runs passed: core and sketch, in both float and
+double VQF configurations. Tests include a deliberately injected 20 ms scheduling
+gap that must still fault and report its sensor/duration. Both board builds
+passed: M4 106916 bytes flash; nRF52840 119076 bytes flash and 15868 bytes static
+RAM. Upstream VQF checksums still match. No upload or hardware timing measurement
+was performed; this mitigation is not yet confirmed to resolve the physical fault.
+
+## Short calibration and explicit upload, 2026-11-08
+
+Calibration now uses 3 seconds of settling and a 2-second stable window with at
+least 200 samples. The existing rest, acceleration and 1-degree peak-to-peak
+checks remain; movement restarts capture. One-second `CAL` progress messages
+show waiting/capture status. `status` identifies `POSTUREPAL firmware=feather-v2`.
+Both sanitizer-enabled suites passed, including completion within 5.5 seconds
+on the stationary simulator and repeat calibration through the serial command.
+The M4 build passed (107796 bytes flash). These checks do not establish physical
+filter settling or baseline quality with the shorter interval; fixture tests
+remain necessary.
+
+The build script now prints BUILD ONLY / NOT flashed by default. Explicit
+`--upload --port YOUR_PORT` builds then uploads; missing `--port` is rejected
+before building. No hardware upload was performed. Board discovery during this
+change showed no USB Feather port.
+
+## Serial monitoring update, 2026-11-08
+
+The automatic 5 Hz `DATA` stream now names `upper_deg` and `lower_deg`, adds
+`buzz=0/1` and per-region `over` flags, and labels limits and times with units.
+`buzz` reports the continuous-drive request; `motor` independently reports
+register confirmation. Pending timers show zero outside `MONITORING`.
+This replaces the old `sag`, `trig`, `rec`, `dur`, `timer` and `motor_req`
+field names; consumers of those fields must use the new names documented in SETUP.md.
+No detection thresholds or motor drive behavior changed.
+
+Both sanitizer-enabled host suites passed. The sketch simulation additionally
+checks sustained RTP drive over five seconds, on/off serial flags, defaults,
+and `buzz=0 motor=UNKNOWN` when a fault requests a stop without confirmation.
+Both pinned target builds passed with warnings enabled:
+
+- Feather M4: 107356 bytes flash (21%); RAM not reported by the build summary.
+- nRF52840: 118164 bytes flash (14%), 15852 bytes static RAM (6%).
+
+No upload or physical validation was performed. The earlier record below
+describes the original nRF52840 revision; M4 setup and migration verification
+are in [FEATHER_M4.md](FEATHER_M4.md).
+
 Completed on 2026-11-02. The replacement was compiled and software-tested; it was
 not uploaded, run on a Feather, or validated on a wearer.
 
@@ -8,7 +213,7 @@ not uploaded, run on a Feather, or validated on a wearer.
 Command from repository root:
 
 ```sh
-python3 tools/build.py
+python3 tools/build.py --board nrf52840
 ```
 
 Actual output:

@@ -1,6 +1,15 @@
 // PosturePal: three independent six-axis VQFs; heading-invariant regional tilt.
 // See ../../docs/SETUP.md before enabling haptics. No BLE or persistent storage.
 #include <Arduino.h>
+#if defined(ARDUINO_ARCH_SAMD)
+#if !defined(USE_TINYUSB)
+#error "PosturePal on SAMD requires Tools > USB Stack > TinyUSB; see docs/FEATHER_M4.md."
+#endif
+#if !defined(VQF_SINGLE_PRECISION)
+#error "PosturePal on SAMD requires compiler.cpp.extra_flags=-DVQF_SINGLE_PRECISION; see docs/FEATHER_M4.md."
+#endif
+#include <Adafruit_TinyUSB.h>
+#endif
 #include <Wire.h>
 #include <Adafruit_LSM6DSOX.h>
 #include <Adafruit_DRV2605.h>
@@ -15,13 +24,15 @@
 #endif
 
 namespace {
-constexpr uint8_t ADDR[3]={0x6b,0x6a,0x6a};
-constexpr uint8_t MOTOR_RTP=32; // Initial LOW drive setting, not a verified motor voltage.
+constexpr uint8_t ADDR[3]={0x6a,0x6a,0x6a}; // Separate mux channels isolate identical addresses.
+constexpr uint8_t MOTOR_RTP=127; // Full positive signed RTP, bounded by explicit OD_CLAMP below.
+constexpr uint8_t MOTOR_OD_CLAMP=138; // ERM open-loop: 0.02159 V/count -> nominal 2.979 V.
 constexpr double G=9.80665, TS=1.0/104.0;
-constexpr uint32_t POLL_US=1000, SETTLE_MS=10000, CAL_TIMEOUT_MS=60000;
+constexpr uint32_t POLL_US=1000, SETTLE_MS=3000, CAL_TIMEOUT_MS=60000;
 VQFParams filterParameters() {
   VQFParams p; p.magDistRejectionEnabled=false; // No magnetometers supplied.
-  return p; // tauAcc=3 s, rest AND motion bias estimation enabled.
+  p.tauAcc=1.0; // Stronger gravity correction; more sensitive to linear acceleration.
+  return p; // Rest AND motion bias estimation remain enabled.
 }
 enum class State { SETTLING,CALIBRATING,MONITORING,ALERT,PAUSED,FAULT };
 const char* stateName(State s) {
@@ -69,13 +80,21 @@ class PosturePal {
   Logger log;
   State state=State::PAUSED;
   bool mountConfigured=false,mountOK=false,baselineValid=false,geometryValid=false;
+  bool motorEnabled=true; // Explicit sensor-only mode is RAM-only; hardware mode stays the default.
   bool have[3]={},newSample[3]={},rest[3]={};
-  double accelerationNorm[3]={},tilt[6]={},regional[4]={},baseline[4]={},deviation[4]={};
+  double accelerationNorm[3]={},tilt[3]={},regional[2]={},baseline[2]={},deviation[2]={};
+  double angularSpeedDps[3]={};
+  double sensorNeutral[3]={};
+  const char* calWaitReason="hold neutral";
   pp::Vec up[3]={};
+  pp::Vec measuredUp[3]={}; // Accelerometer-only reference, meaningful when held still.
   uint32_t stamp[3]={},samples[3]={},maxGap[3]={};
   uint32_t bootUs=0,stateStart=0,calStart=0,lastPoll=0,lastDiag=0,lastMotor=0,skew=0;
-  uint32_t lastConfigCheck=0;
+  uint32_t lastConfigCheck=0,lastCalProgress=0;
+  uint32_t maxLoopUs=0,maxFilterUs=0,maxDiagUs=0,maxCommandUs=0;
   uint8_t configSensor=0;
+  uint8_t pendingSense=3; // Three means idle; emit requested detail over separate loops.
+  uint8_t scanStep=16; // Fault-only bus diagnostic: eight channels at two clock rates.
   char input[160]={}; size_t inputLength=0; bool inputOverflow=false;
   char faultMessage[100]="none";
 
@@ -88,11 +107,12 @@ class PosturePal {
     faultMessage[sizeof(faultMessage)-1]=0;
     baselineValid=false; geometryValid=false; alerts.reset(); calibration.reset();
     // Best effort; never recurse into fault handling if shutdown also fails.
-    bool stopped=motor.stop(); lastMotor=millis();
+    bool stopped=!motorEnabled||motor.stop(); lastMotor=millis();
     transition(State::FAULT,reason);
-    log.line("ERROR stop=%s; retry required",stopped?"registers-confirmed":"UNKNOWN");
+    log.line("ERROR stop=%s; retry required",!motorEnabled?"motor-disabled":stopped?"registers-confirmed":"UNKNOWN");
   }
   bool stopOrFault() {
+    if(!motorEnabled) { motor.requested=false;motor.confirmed=pp::MotorConfirmation::UNKNOWN;return true; }
     if(motor.stop()) { lastMotor=millis(); return true; }
     fault("motor stop transaction/readback failed"); return false;
   }
@@ -106,7 +126,8 @@ class PosturePal {
     if(!mountOK) { log.line("ERR set axes and complete mount-ok first"); return; }
     if(!stopOrFault()) return;
     baselineValid=false; alerts.reset(); calibration.reset();
-    transition(State::SETTLING,"hold neutral; 10 s settle, then 5 s continuously still");
+    calWaitReason="hold neutral";
+    transition(State::SETTLING,"hold neutral; 3 s settle, then 2 s continuously still");
   }
   bool initialize() {
     baselineValid=false; geometryValid=false; alerts.reset(); calibration.reset();
@@ -114,19 +135,28 @@ class PosturePal {
       have[i]=newSample[i]=rest[i]=false; stamp[i]=samples[i]=maxGap[i]=0;
       filters[i].resetState();
     }
-    // stop() works without the Adafruit driver object being initialized.
-    if(!motor.stop()) { fault("initial motor stop failed; check mux 3 / DRV2605L"); return false; }
-    if(!bus.select(3)||!drv.begin(&Wire)) { fault("DRV2605L initialization failed"); return false; }
-    uint8_t feedback,control3;
-    if(!bus.read(0x5a,0x1a,&feedback,1)||!bus.read(0x5a,0x1d,&control3,1)||
-       !bus.writeVerify(0x5a,0x1a,uint8_t(feedback&0x7f))||
-       !bus.writeVerify(0x5a,0x1d,uint8_t((control3|0x20)&~0x08))||
-       !motor.stop()||!motor.check(MOTOR_RTP)) {
-      fault("ERM/open-loop/signed-RTP configuration failed"); return false;
-    }
+    if(motorEnabled) {
+      log.line("MODE hardware motor enabled (default after reset); buzz reports drive request, not measured vibration");
+      // stop() works without the Adafruit driver object being initialized.
+      if(!motor.stop()) { fault("initial motor stop failed; check mux 3 / DRV2605L"); return false; }
+      if(!bus.select(3)||!drv.begin(&Wire)) { fault("DRV2605L initialization failed"); return false; }
+      uint8_t feedback,control3;
+      if(!bus.read(0x5a,0x1a,&feedback,1)||!bus.read(0x5a,0x1d,&control3,1)||
+         !bus.writeVerify(0x5a,0x1a,uint8_t(feedback&0x7f))||
+         !bus.writeVerify(0x5a,0x1d,uint8_t((control3|0x20)&~0x48))|| // ERM OL, signed RTP, supply compensation enabled.
+         !bus.writeVerify(0x5a,0x17,MOTOR_OD_CLAMP)||
+         !motor.stop()||!motor.check(MOTOR_RTP)) {
+        fault("ERM/open-loop/signed-RTP configuration failed"); return false;
+      }
+    } else log.line("MODE sensor-only; physical motor disabled; buzz reports alert decision");
     for(uint8_t i=0;i<3;i++) {
-      if(!bus.select(i)||!imu[i].begin_I2C(ADDR[i],&Wire)) {
-        fault("LSM6DSOX initialization failed; check channel/address"); return false;
+      if(!bus.select(i)) {
+        char reason[100];snprintf(reason,sizeof(reason),"mux 0x70 select failed for IMU channel %u; use scan",unsigned(i));
+        fault(reason);return false;
+      }
+      if(!imu[i].begin_I2C(ADDR[i],&Wire)) {
+        char reason[100];snprintf(reason,sizeof(reason),"IMU init failed channel=%u addr=0x%02X; use scan",unsigned(i),unsigned(ADDR[i]));
+        fault(reason); return false;
       }
       imu[i].setAccelRange(LSM6DS_ACCEL_RANGE_2_G);
       imu[i].setGyroRange(LSM6DS_GYRO_RANGE_250_DPS);
@@ -139,6 +169,9 @@ class PosturePal {
       uint8_t discard[12];
       if(!bus.read(ADDR[i],0x22,discard,sizeof(discard))) { fault("initial IMU drain failed"); return false; }
     }
+    // BusIO device begin() calls Wire.begin(), resetting SAMD's clock to 100 kHz.
+    // Restore fast mode AFTER every device has initialized, also on retry.
+    Wire.setClock(400000);
     // Initializing other sensors can leave earlier sensors holding a stale BDU sample.
     for(uint8_t i=0;i<3;i++) {
       uint8_t discard[12];
@@ -167,18 +200,33 @@ class PosturePal {
     // OUTX_L_G 0x22 through OUTZ_H_A 0x2d, little endian, gyro then acceleration.
     if(!bus.read(ADDR[i],0x22,bytes,12)) { fault("IMU short read or NACK"); return false; }
     now=micros();
-    if(pp::sampleGap(now,stamp[i],have[i])) { fault("IMU acquisition gap; sample continuity lost"); return false; }
+    if(pp::sampleGap(now,stamp[i],have[i])) {
+      char reason[100];
+      snprintf(reason,sizeof(reason),"IMU gap imu=%u gap_us=%lu limit_us=%lu",unsigned(i),
+        (unsigned long)(now-stamp[i]),(unsigned long)pp::GAP_US);
+      fault(reason); return false;
+    }
     if(have[i] && now-stamp[i]>maxGap[i]) maxGap[i]=now-stamp[i];
     vqf_real_t gyr[3],acc[3];
     for(int j=0;j<3;j++) {
       int16_t g=signedLE(bytes+2*j),a=signedLE(bytes+6+2*j);
-      if(g>=32000||g<=-32000||a>=32000||a<=-32000) { fault("IMU near full-scale; invalid posture estimate"); return false; }
+      if(g>=32000||g<=-32000||a>=32000||a<=-32000) {
+        bool gyro=g>=32000||g<=-32000;
+        char reason[100];
+        snprintf(reason,sizeof(reason),"IMU near full-scale imu=%u channel=%u source=%s axis=%c raw=%d limit=32000",
+          unsigned(i),unsigned(i),gyro?"gyro":"accel",char('X'+j),int(gyro?g:a));
+        fault(reason); return false;
+      }
       gyr[j]=g*0.00875/pp::DEG; // +/-250 dps: 8.75 mdps/LSB -> rad/s
       acc[j]=a*0.000061*G;     // +/-2g: 0.061 mg/LSB -> m/s^2
     }
     accelerationNorm[i]=std::sqrt(acc[0]*acc[0]+acc[1]*acc[1]+acc[2]*acc[2]);
+    angularSpeedDps[i]=std::sqrt(double(gyr[0])*gyr[0]+double(gyr[1])*gyr[1]+double(gyr[2])*gyr[2])*pp::DEG;
     if(accelerationNorm[i]<0.1*G) { fault("near-zero acceleration / free fall"); return false; }
+    measuredUp[i]={acc[0]/accelerationNorm[i],acc[1]/accelerationNorm[i],acc[2]/accelerationNorm[i]};
+    uint32_t filterStart=micros();
     filters[i].update(gyr,acc);
+    uint32_t filterUs=micros()-filterStart; if(filterUs>maxFilterUs) maxFilterUs=filterUs;
     rest[i]=filters[i].getRestDetected();
     vqf_real_t q[4]; filters[i].getQuat6D(q);
     if(!pp::upFromQuaternion(q,alignment[i],up[i])) { fault("invalid filter quaternion"); return false; }
@@ -192,56 +240,75 @@ class PosturePal {
     geometryValid=true;
     for(uint8_t i=0;i<3;i++) {
       newSample[i]=false;
-      if(!pp::tilts(up[i],tilt[i],tilt[i+3])) geometryValid=false;
+      if(!pp::sagittalTilt(up[i],tilt[i])) geometryValid=false;
     }
     if(!geometryValid) {
-      if(mountOK) fault("near-singular tilt projection; outside seated measurement envelope");
+      if(mountOK) fault("sagittal projection undefined; check sensor orientation");
       return; // Before axes are verified, raw up vectors are still available for setup.
     }
     pp::regions(tilt,regional);
     if(state==State::SETTLING && pp::elapsed(now,stateStart,SETTLE_MS)) {
       calibration.reset(); calStart=now;
-      transition(State::CALIBRATING,"5 s neutral averaging; movement restarts window");
+      transition(State::CALIBRATING,"2 s neutral averaging; movement restarts window");
     }
     if(state==State::CALIBRATING) {
       bool still=true;
-      for(uint8_t i=0;i<3;i++) if(!rest[i]||std::fabs(accelerationNorm[i]-G)>0.05*G) still=false;
+      // VQF's bias-estimator rest flag is deliberately strict; do not use it as
+      // a wearable calibration gate. Use explicit motion/gravity limits instead.
+      const char* motionReason[3]={"upper sensor moving too quickly","middle sensor moving too quickly","lower sensor moving too quickly"};
+      const char* accelReason[3]={"upper sensor acceleration not steady","middle sensor acceleration not steady","lower sensor acceleration not steady"};
+      for(uint8_t i=0;i<3;i++) {
+        if(angularSpeedDps[i]>5.0) { still=false;calWaitReason=motionReason[i];break; }
+        if(std::fabs(accelerationNorm[i]-G)>0.10*G) { still=false;calWaitReason=accelReason[i];break; }
+      }
       if(calibration.add(now,tilt,regional,still)) {
-        calibration.baseline(baseline); baselineValid=true; alerts.reset();
-        log.line("BASELINE sag=%.3f,%.3f lateral=%.3f,%.3f samples=%lu p2p_deg=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f",
-          baseline[0],baseline[1],baseline[2],baseline[3],(unsigned long)calibration.count,
-          calibration.hi[0]-calibration.lo[0],calibration.hi[1]-calibration.lo[1],calibration.hi[2]-calibration.lo[2],
-          calibration.hi[3]-calibration.lo[3],calibration.hi[4]-calibration.lo[4],calibration.hi[5]-calibration.lo[5]);
+        calibration.baseline(baseline);calibration.sensorBaseline(sensorNeutral);baselineValid=true;alerts.reset();
         transition(State::MONITORING,"neutral saved in RAM");
-      } else if(pp::elapsed(now,calStart,CAL_TIMEOUT_MS)) fault("calibration timeout; unable to hold stable neutral");
+      } else {
+        if(still&&!calibration.tracking) calWaitReason="posture changed too much; capture restarted";
+        if(pp::elapsed(now,calStart,CAL_TIMEOUT_MS)) fault("calibration timeout; use status for last calibration blocker");
+      }
     }
     if(!baselineValid) return;
-    for(int i=0;i<4;i++) deviation[i]=pp::wrap(regional[i]-baseline[i]);
+    for(int i=0;i<2;i++) deviation[i]=pp::wrap(regional[i]-baseline[i]);
     if(state!=State::MONITORING && state!=State::ALERT) return;
     alerts.update(deviation,now,settings);
     if(alerts.alert && state!=State::ALERT) {
-      if(!motor.start(MOTOR_RTP)) { fault("motor start/writeback failed"); return; }
+      if(motorEnabled&&(!bus.select(3)||!bus.verify(0x5a,0x17,MOTOR_OD_CLAMP)||!motor.start(MOTOR_RTP))) {
+        fault("motor voltage clamp/start verification failed"); return;
+      }
       lastMotor=now; transition(State::ALERT,"regional persistence reached");
     } else if(!alerts.alert && state==State::ALERT) {
       if(stopOrFault()) transition(State::MONITORING,"both regions within recovery limits");
     }
   }
   void status() {
+    log.line("POSTUREPAL firmware=feather-v3 calibration=3s-settle+2s-still vqf_bits=%u",unsigned(sizeof(vqf_real_t)*8));
+    log.line("FILTER tau_acc_s=1.0 baseline=fixed; use sense for gravity comparison");
+    log.line("CAL_INFO gate=gyro-and-gravity max_speed_dps=5 max_accel_error_percent=10 max_sway_deg=2 last_blocker=%s",calWaitReason);
+    log.line("TIMING max_loop_us=%lu max_filter_us=%lu max_diag_us=%lu max_command_us=%lu gap_limit_us=%lu",
+      (unsigned long)maxLoopUs,(unsigned long)maxFilterUs,(unsigned long)maxDiagUs,
+      (unsigned long)maxCommandUs,(unsigned long)pp::GAP_US);
     log.line("STATUS state=%s mount_configured=%d mount_ok=%d baseline_valid=%d geometry_valid=%d fault=%s",
       stateName(state),mountConfigured,mountOK,baselineValid,geometryValid,faultMessage);
+    log.line("MOTOR buzz=%d motor=%s enabled=%d",motorEnabled?motor.requested:alerts.alert,
+      !motorEnabled?"DISABLED":motor.confirmed==pp::MotorConfirmation::UNKNOWN?"UNKNOWN":motor.confirmed==pp::MotorConfirmation::ON?"ON_REG":"OFF_REG",motorEnabled);
+    log.line("ACTUATOR Adafruit_1201 ERM open-loop signed-RTP; OD_CLAMP=%u full_scale_nominal_v=2.979 supply_compensation=on",MOTOR_OD_CLAMP);
     log.line("SETTINGS trigger=%.2f,%.2f recovery=%.2f,%.2f duration_ms=%lu motor_rtp=%u (TUNING VALUES)",
       settings.trigger[0],settings.trigger[1],settings.recovery[0],settings.recovery[1],
       (unsigned long)settings.durationMs,MOTOR_RTP);
-    log.line("BASELINE valid=%d sag=%.3f,%.3f lateral=%.3f,%.3f",baselineValid,baseline[0],baseline[1],baseline[2],baseline[3]);
+    log.line("BASELINE valid=%d sag=%.3f,%.3f",baselineValid,baseline[0],baseline[1]);
     for(int i=0;i<3;i++) log.line("AXES imu=%d forward=%.2f,%.2f,%.2f left=%.2f,%.2f,%.2f head=%.2f,%.2f,%.2f",
       i,alignment[i].m[0][0],alignment[i].m[0][1],alignment[i].m[0][2],
       alignment[i].m[1][0],alignment[i].m[1][1],alignment[i].m[1][2],
       alignment[i].m[2][0],alignment[i].m[2][1],alignment[i].m[2][2]);
   }
   void help() {
-    log.line("COMMANDS help | status | axes <headward signed axis> <outward signed axis> | mount-ok");
+    log.line("COMMANDS scan (in FAULT): check IMU IDs on all mux channels at 100/400 kHz");
+    log.line("COMMANDS help | status | sense | axes <headward signed axis> <outward signed axis> | mount-ok");
+    log.line("COMMANDS motor off (sensor-only) | motor on (require driver); mode resets on reboot");
     log.line("COMMANDS calibrate | pause | resume | retry | set <upperTrigger> <upperRecovery> <lowerTrigger> <lowerRecovery> <durationMs>");
-    log.line("EXAMPLE axes +Y +Z only if +Y points headward and +Z outward; mount-ok then holds neutral for >=15 s");
+    log.line("EXAMPLE axes +Y +Z only if +Y points headward and +Z outward; mount-ok then hold neutral for about 5 s");
   }
   void command() {
     char* tokens[8]; int count=0; char* save=nullptr;
@@ -251,6 +318,26 @@ class PosturePal {
     if(!count) return;
     if(count==1&&!strcmp(tokens[0],"help")) { help(); return; }
     if(count==1&&!strcmp(tokens[0],"status")) { status(); return; }
+    if(count==1&&(!strcmp(tokens[0],"motor-on")||!strcmp(tokens[0],"motor-off"))) {
+      log.line("ERR use motor on or motor off with a space; mode unchanged");return;
+    }
+    if(count==1&&!strcmp(tokens[0],"scan")) {
+      if(state!=State::FAULT) { log.line("ERR scan requires FAULT; it is a bus diagnostic, not a monitoring command");return; }
+      scanStep=0;log.line("BUS scan starting; expected LSM6DSOX WHO_AM_I=0x6C; channels 0/1/2 normally use 0x6A");return;
+    }
+    if(count==1&&!strcmp(tokens[0],"sense")) {
+      pendingSense=0;
+      return;
+    }
+    if(count==2&&!strcmp(tokens[0],"motor")&&(!strcmp(tokens[1],"off")||!strcmp(tokens[1],"on"))) {
+      bool enable=!strcmp(tokens[1],"on");
+      if(!enable&&motorEnabled) {
+        // One best-effort shutdown before opting out; disconnected hardware is not required.
+        if(!motor.stop()) log.line("NOTICE motor stop unconfirmed; sensor-only mode cannot guarantee physical shutdown");
+      }
+      motorEnabled=enable;motor.requested=false;motor.confirmed=pp::MotorConfirmation::UNKNOWN;
+      strcpy(faultMessage,"none");initialize();return;
+    }
     if(count==1&&!strcmp(tokens[0],"retry")) { strcpy(faultMessage,"none"); initialize(); return; }
     if(state==State::FAULT) { log.line("ERR FAULT latched; use retry after correcting cause"); return; }
     if(!strcmp(tokens[0],"set")) {
@@ -302,23 +389,53 @@ class PosturePal {
     }
   }
   void diagnostics() {
-    uint32_t now=millis(); if(!pp::elapsed(now,lastDiag,200)) return; lastDiag=now;
-    uint32_t us=micros();
-    log.line("DATA ms=%lu state=%s valid=%d sag=%.2f,%.2f lat=%.2f,%.2f total=%.2f base=%.2f,%.2f trig=%.2f,%.2f rec=%.2f,%.2f dur=%lu timer=%lu,%lu motor_req=%d motor=%s age_us=%lu,%lu,%lu skew_us=%lu rest=%d%d%d dropped=%lu",
-      (unsigned long)now,stateName(state),baselineValid&&geometryValid&&state!=State::FAULT,
-      deviation[0],deviation[1],deviation[2],deviation[3],pp::wrap(deviation[0]+deviation[1]),
-      baseline[0],baseline[1],settings.trigger[0],settings.trigger[1],settings.recovery[0],settings.recovery[1],
-      (unsigned long)settings.durationMs,
-      (unsigned long)(alerts.timing[0]?now-alerts.start[0]:0),(unsigned long)(alerts.timing[1]?now-alerts.start[1]:0),
-      motor.requested,motor.confirmed==pp::MotorConfirmation::UNKNOWN?"UNKNOWN":motor.confirmed==pp::MotorConfirmation::ON?"ON_REG":"OFF_REG",
-      (unsigned long)(have[0]?us-stamp[0]:UINT32_MAX),(unsigned long)(have[1]?us-stamp[1]:UINT32_MAX),
-      (unsigned long)(have[2]?us-stamp[2]:UINT32_MAX),(unsigned long)skew,rest[0],rest[1],rest[2],(unsigned long)log.dropped);
-    // Raw up vectors expose incorrect orientation even when projected tilt is singular.
-    log.line("SENSE upBody=%.3f,%.3f,%.3f;%.3f,%.3f,%.3f;%.3f,%.3f,%.3f tilt=%.2f,%.2f,%.2f samples=%lu,%lu,%lu maxgap_us=%lu,%lu,%lu cal_n=%lu",
-      up[0].x,up[0].y,up[0].z,up[1].x,up[1].y,up[1].z,up[2].x,up[2].y,up[2].z,tilt[0],tilt[1],tilt[2],
-      (unsigned long)samples[0],(unsigned long)samples[1],(unsigned long)samples[2],
-      (unsigned long)maxGap[0],(unsigned long)maxGap[1],(unsigned long)maxGap[2],(unsigned long)calibration.count);
+    uint32_t now=millis();
+    if(state==State::SETTLING||state==State::CALIBRATING) {
+      if(pp::elapsed(now,lastCalProgress,1000)) {
+        lastCalProgress=now;
+        log.line("CAL %s",state==State::SETTLING?"hold neutral; filters settling":
+          calibration.tracking?"keep still; capturing neutral":calWaitReason);
+      }
+      return;
+    }
+    if(state!=State::MONITORING&&state!=State::ALERT) return;
+    if(!baselineValid||!geometryValid||!pp::elapsed(now,lastDiag,1000)) return;
+    lastDiag=now;
+    // Command flag, not a physical vibration measurement. Faults are reported separately.
+    log.line("upper_deg=%.2f lower_deg=%.2f buzz=%d",deviation[0],deviation[1],motorEnabled?motor.requested:alerts.alert);
   }
+
+  void senseDiagnostics() {
+    if(pendingSense>=3) return;
+    uint8_t i=pendingSense++;
+    double gravityTilt=0;
+    bool projected=have[i]&&pp::sagittalTilt(alignment[i].apply(measuredUp[i]),gravityTilt);
+    bool quiet=projected&&std::fabs(accelerationNorm[i]-G)<=0.10*G&&angularSpeedDps[i]<=5;
+    uint32_t runtime=micros()-bootUs;
+    const char* names[3]={"T3","T12","L5"};
+    log.line("SENSE imu=%u site=%s valid=%d neutral_valid=%d vqf_deg=%.2f neutral_delta_deg=%.2f gravity_deg=%.2f gravity_quiet=%d filter_minus_gravity_deg=%.2f gyro_dps=%.2f rest=%d mean_hz=%.1f",
+      unsigned(i),names[i],have[i]&&geometryValid&&state!=State::FAULT,baselineValid,
+      tilt[i],baselineValid?pp::wrap(tilt[i]-sensorNeutral[i]):0,gravityTilt,quiet,
+      projected?pp::wrap(tilt[i]-gravityTilt):0,angularSpeedDps[i],rest[i],
+      runtime?double(samples[i])*1000000.0/runtime:0);
+  }
+
+  void busDiagnostics() {
+    if(scanStep>=16) return;
+    if(state!=State::FAULT) {scanStep=16;Wire.setClock(400000);return;}
+    uint32_t hz=scanStep<8?100000:400000;
+    uint8_t channel=scanStep%8;++scanStep;
+    Wire.setClock(hz);
+    if(!bus.select(channel)) log.line("BUS hz=%lu channel=%u mux_0x70=FAIL",(unsigned long)hz,unsigned(channel));
+    else for(uint8_t addr=0x6a;addr<=0x6b;addr++) {
+      uint8_t id=0;
+      bool ok=bus.read(addr,0x0f,&id,1);
+      log.line("BUS hz=%lu channel=%u addr=0x%02X read=%s id=0x%02X lsm6dsox=%d",
+        (unsigned long)hz,unsigned(channel),unsigned(addr),ok?"OK":"FAIL",unsigned(id),ok&&id==0x6c);
+    }
+    if(scanStep==16) {Wire.setClock(400000);log.line("BUS scan complete; send retry after correcting connections/mapping");}
+  }
+
 public:
   PosturePal():bus(Wire),motor(bus),filters{VQF(filterParameters(),TS),VQF(filterParameters(),TS),VQF(filterParameters(),TS)} {
     for(int i=0;i<3;i++) alignment[i]={{{1,0,0},{0,1,0},{0,0,1}}}; // UNVERIFIED placeholder
@@ -329,7 +446,9 @@ public:
     initialize(); help();
   }
   void tick() {
+    uint32_t loopStart=micros();
     serialInput();
+    uint32_t commandUs=micros()-loopStart; if(commandUs>maxCommandUs) maxCommandUs=commandUs;
     if(state!=State::FAULT) {
       uint32_t us=micros();
       if(pp::elapsed(us,lastPoll,POLL_US)) {
@@ -339,7 +458,9 @@ public:
       }
       uint32_t now=millis();
       if(state!=State::FAULT && pp::elapsed(now,lastMotor,250)) {
-        lastMotor=now; if(!motor.check(MOTOR_RTP)) fault("motor state/status verification failed");
+        lastMotor=now;
+        if(motorEnabled&&(!motor.check(MOTOR_RTP)||!bus.verify(0x5a,0x17,MOTOR_OD_CLAMP)))
+          fault("motor state/status/voltage-clamp verification failed");
       }
       if(state!=State::FAULT && pp::elapsed(now,lastConfigCheck,1000)) {
         lastConfigCheck=now;
@@ -347,9 +468,15 @@ public:
         configSensor=(configSensor+1)%3;
       }
     } else if(pp::elapsed(millis(),lastMotor,250)) {
-      lastMotor=millis(); motor.stop(); // Remain latched FAULT even if shutdown succeeds.
+      lastMotor=millis(); if(motorEnabled) motor.stop(); // Remain latched FAULT even if shutdown succeeds.
     }
-    diagnostics(); log.drain();
+    uint32_t diagStart=micros();
+    diagnostics();
+    senseDiagnostics();
+    busDiagnostics();
+    uint32_t diagUs=micros()-diagStart; if(diagUs>maxDiagUs) maxDiagUs=diagUs;
+    log.drain();
+    uint32_t loopUs=micros()-loopStart; if(loopUs>maxLoopUs) maxLoopUs=loopUs;
   }
 };
 PosturePal device;

@@ -6,19 +6,25 @@ struct TwoWire {
   uint8_t channel=0,addr=0,reg=0;
   uint8_t sensorRegs[3][256]={},motorRegs[256]={};
   bool sensorNack[3]={},freeze[3]={},motorNack=false,muxNack=false,shortRead=false;
-  double angle[3]={},gyroY[3]={};
+  double angle[3]={},gyroY[3]={},gyroBiasY[3]={};
+  int16_t rawAccelX[3]={},rawGyroX[3]={}; // Nonzero overrides for range-fault tests.
   uint32_t lastSample[3]={};
   std::vector<uint8_t> tx,rx;size_t pos=0;
   TwoWire() { motorRegs[0]=0xe0; for(int i=0;i<3;i++)sensorRegs[i][15]=0x6c; }
-  void begin() {} void setClock(uint32_t) {}
+  uint32_t clockHz=100000;
+  uint32_t motorAccesses=0;
+  void begin() {clockHz=100000;}
+  void setClock(uint32_t hz) {clockHz=hz;}
   void beginTransmission(uint8_t a) {addr=a;tx.clear();}
   size_t write(uint8_t v) {tx.push_back(v);return 1;}
   uint8_t endTransmission(bool=true) {
+    if(addr==0x5a) ++motorAccesses;
     if(addr==0x70) {
       if(muxNack)return 2;
       for(int i=0;i<8;i++)if(tx[0]==(1<<i))channel=uint8_t(i);
       return 0;
     }
+    if(channel<3&&addr!=0x6a)return 2; // Actual hardware: all IMUs use 0x6A.
     if((channel<3&&sensorNack[channel])||(channel==3&&motorNack))return 2;
     reg=tx[0];
     if(tx.size()==2) {
@@ -37,9 +43,11 @@ struct TwoWire {
       else if(reg==0x22&&n==12) {
         lastSample[channel]=fakeUs/9615;
         double radians=angle[channel]*3.141592653589793/180;
-        put(rx,2,gyroY[channel]/0.00875);
+        put(rx,2,(gyroY[channel]+gyroBiasY[channel])/0.00875);
         put(rx,6,-std::sin(radians)/0.000061);
         put(rx,10,std::cos(radians)/0.000061);
+        if(rawAccelX[channel])put(rx,6,rawAccelX[channel]);
+        if(rawGyroX[channel])put(rx,0,rawGyroX[channel]);
       } else for(size_t i=0;i<n;i++)rx[i]=sensorRegs[channel][uint8_t(reg+i)];
     } else if(channel==3)for(size_t i=0;i<n;i++)rx[i]=motorRegs[uint8_t(reg+i)];
     if(shortRead&&n)rx.pop_back();
