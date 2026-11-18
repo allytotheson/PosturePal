@@ -24,11 +24,12 @@ struct TwoWire {
       for(int i=0;i<8;i++)if(tx[0]==(1<<i))channel=uint8_t(i);
       return 0;
     }
-    if(channel<3&&addr!=0x6a)return 2; // Actual hardware: all IMUs use 0x6A.
-    if((channel<3&&sensorNack[channel])||(channel==3&&motorNack))return 2;
+    // DRV is upstream; only the three 0x6A IMUs depend on mux selection.
+    if(addr==0x5a) { if(motorNack)return 2; }
+    else if(addr!=0x6a||channel>=3||sensorNack[channel])return 2;
     reg=tx[0];
     if(tx.size()==2) {
-      if(channel==3)motorRegs[reg]=tx[1];else if(channel<3)sensorRegs[channel][reg]=tx[1];
+      if(addr==0x5a)motorRegs[reg]=tx[1];else if(channel<3)sensorRegs[channel][reg]=tx[1];
     }
     return 0;
   }
@@ -38,7 +39,8 @@ struct TwoWire {
   }
   size_t requestFrom(uint8_t,size_t n,bool) {
     rx.assign(n,0);pos=0;
-    if(channel<3) {
+    if(addr==0x5a)for(size_t i=0;i<n;i++)rx[i]=motorRegs[uint8_t(reg+i)];
+    else if(channel<3) {
       if(reg==0x1e&&n==1)rx[0]=!freeze[channel]&&fakeUs/9615!=lastSample[channel]?3:0;
       else if(reg==0x22&&n==12) {
         lastSample[channel]=fakeUs/9615;
@@ -49,7 +51,7 @@ struct TwoWire {
         if(rawAccelX[channel])put(rx,6,rawAccelX[channel]);
         if(rawGyroX[channel])put(rx,0,rawGyroX[channel]);
       } else for(size_t i=0;i<n;i++)rx[i]=sensorRegs[channel][uint8_t(reg+i)];
-    } else if(channel==3)for(size_t i=0;i<n;i++)rx[i]=motorRegs[uint8_t(reg+i)];
+    }
     if(shortRead&&n)rx.pop_back();
     return rx.size();
   }

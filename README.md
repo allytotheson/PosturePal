@@ -11,6 +11,7 @@ unchecked motor writes can all contribute to missed alerts or continued buzzing.
 Changing the filter alone cannot correct mounting movement or a failed stop command.
 
 - [Feather M4 Express setup and migration notes](docs/FEATHER_M4.md)
+- [nRF52840 BLE test interface and website integration](docs/BLE.md)
 - [Complete Arduino firmware](firmware/PosturePal/PosturePal.ino)
 - [Dependencies, build/upload, axis mapping, and serial commands](docs/SETUP.md)
 - [Diagnosis, coordinate frames, method, and limitations](docs/METHOD.md)
@@ -35,6 +36,6 @@ established again after a reset. Once running, USB disconnection does not pause
 local monitoring.
 
 Default limits (7.5° trigger, 4° recovery, two seconds) are **tuning values**.
-Lateral angles are not calculated or used for calibration, alerts or angle faults. BLE and the desktop app are
-outside this revision. Hardware performance and physical motor shutdown have not
+Lateral angles are not calculated or used for calibration, alerts or angle faults. The nRF52840 build includes BLE commands/readings and a local browser test interface.
+The M4 remains USB-only. Hardware performance and physical motor shutdown have not
 been verified; register readback confirms register state, not actuator motion.

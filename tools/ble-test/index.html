@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PosturePal · BLE bench</title>
+<style>
+:root{font:16px system-ui;color:#173d38;background:#f2f5ef}body{max-width:880px;margin:40px auto;padding:0 20px}h1{font-size:40px;margin:8px 0}p{line-height:1.6}.eyebrow{letter-spacing:.16em;font-size:12px;font-weight:700}section{background:white;border:1px solid #d8e3d9;border-radius:18px;padding:24px;margin:20px 0}.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}button,input{font:inherit;border:1px solid #a2b9ac;border-radius:8px;padding:11px}button{cursor:pointer;background:#edf3e9;color:#173d38}button.primary{background:#235a4d;color:white}button:disabled{opacity:.45;cursor:default}input{flex:1;min-width:180px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.value{font-size:32px;font-weight:650;display:block;margin-top:12px}.hint{font-size:14px;color:#50685e}pre{background:#102e29;color:#d7edda;padding:18px;border-radius:10px;max-height:290px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}#notice{color:#884224;min-height:24px}#state{font-weight:600}@media(max-width:540px){.cards{grid-template-columns:1fr}h1{font-size:32px}}
+</style></head><body>
+<div class="eyebrow">POSTUREPAL / HARDWARE LAB</div><h1>BLE bench</h1>
+<p>Connect directly to your nRF52840. Calibration, posture detection and motor control run on the device.</p>
+<section><div class="row"><button class="primary" id="connect">Connect device</button><button id="disconnect" disabled>Disconnect</button><span id="connection" role="status">Disconnected</span></div><p class="hint">Use a supported Chrome / Edge browser on localhost or HTTPS. The Feather M4 has no built-in BLE. This page uses real hardware; it does not simulate readings.</p><div id="notice" role="alert"></div></section>
+<div class="cards"><section>Upper deviation<span class="value" id="upper">—</span></section><section>Lower deviation<span class="value" id="lower">—</span></section><section>Alert request<span class="value" id="buzz">—</span></section></div>
+<p id="state">Waiting for device</p><p class="hint" id="freshness">No readings received. Buzz is a requested state, not proof of motor movement.</p>
+<section><h2>Device controls</h2><div class="row" id="controls"><button data-command="status">Read status</button><button data-command="sense">Read sensors</button><button data-command="pause">Pause</button><button data-command="resume">Resume</button><button data-command="calibrate">Calibrate</button></div>
+<p class="hint">First use: verify the physical axes, send <code>axes &lt;headward&gt; &lt;outward&gt;</code>, then <code>mount-ok</code>. Hold neutral through settling and calibration. Do not copy an axis example without checking your mounting.</p>
+<form class="row" id="commandForm"><input id="command" aria-label="Device command" placeholder="Command, e.g. status" maxlength="159" autocomplete="off"><button id="send">Send command</button></form></section>
+<section><div class="row"><h2>Device log</h2><button id="clear">Clear log</button></div><pre id="log" aria-label="Device log">Connect to begin.</pre></section>
+<script type="module">
+import {PosturePal} from './posturepal.js';
+const client = new PosturePal();
+const $ = id => document.getElementById(id);
+let connected=false, lastReading=0;
+function invalidate(){for(const id of ['upper','lower','buzz']) $(id).textContent='—';lastReading=0;}
+function controls(){document.querySelectorAll('[data-command],#send,#command').forEach(e=>e.disabled=!connected||client.busy);}
+async function run(fn){$('notice').textContent='';try{await fn();}catch(e){$('notice').textContent=e.message;}finally{controls();}}
+client.addEventListener('connection',e=>{connected=e.detail;$('connection').textContent=connected?'Connected':'Disconnected';$('connect').disabled=connected;$('disconnect').disabled=!connected;if(!connected){invalidate();$('state').textContent='Disconnected — local monitoring may continue';}controls();});
+client.addEventListener('line',e=>{const text=$('log').textContent+'\n'+e.detail;$('log').textContent=text.split('\n').slice(-250).join('\n');$('log').scrollTop=$('log').scrollHeight;const state=/^(?:EVENT|STATUS) state=(\w+)/.exec(e.detail);if(state){$('state').textContent=state[1];if(!['MONITORING','ALERT'].includes(state[1]))invalidate();}});
+client.addEventListener('reading',e=>{lastReading=Date.now();$('upper').textContent=e.detail.upper.toFixed(2)+'°';$('lower').textContent=e.detail.lower.toFixed(2)+'°';$('buzz').textContent=e.detail.buzz?'On':'Off';});
+client.addEventListener('error',e=>$('notice').textContent=e.detail);
+$('connect').onclick=()=>run(async()=>{$('connect').disabled=true;try{await client.connect();}finally{$('connect').disabled=connected;}});
+$('disconnect').onclick=()=>client.disconnect();
+async function send(command){await run(async()=>{const promise=client.send(command);controls();await promise;});}
+document.querySelectorAll('[data-command]').forEach(b=>b.onclick=()=>send(b.dataset.command));
+$('commandForm').onsubmit=e=>{e.preventDefault();send($('command').value.trim());};
+$('clear').onclick=()=>$('log').textContent='';
+setInterval(()=>{$('freshness').textContent=lastReading?`Last reading ${Math.floor((Date.now()-lastReading)/1000)}s ago${Date.now()-lastReading>3500?' — STALE':''}. Buzz is a request, not measured vibration.`:'No current readings. Monitoring must be calibrated and active.';if(lastReading&&Date.now()-lastReading>3500)for(const id of ['upper','lower','buzz'])$(id).textContent='—';},500);
+controls();
+</script></body></html>

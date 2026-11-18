@@ -34,6 +34,7 @@ public:
   }
 };
 enum class MotorConfirmation { UNKNOWN, OFF, ON };
+// The single DRV2605L is on upstream SDA/SCL, independent of mux selection.
 template<class BusType> class Motor {
   BusType& bus;
 public:
@@ -42,7 +43,6 @@ public:
   explicit Motor(BusType& b):bus(b) {}
   bool stop() {
     requested=false; confirmed=MotorConfirmation::UNKNOWN;
-    if(!bus.select(3)) return false;
     // Try EVERY stop action even if a previous action failed. GO alone does not stop RTP.
     bool zero=bus.write(0x5a,0x02,0);
     bool go=bus.write(0x5a,0x0c,0);
@@ -54,13 +54,13 @@ public:
   }
   bool start(uint8_t amplitude) {
     requested=true; confirmed=MotorConfirmation::UNKNOWN;
-    if(amplitude==0||amplitude>127||!bus.select(3)) return false;
+    if(amplitude==0||amplitude>127) return false;
     if(!bus.writeVerify(0x5a,0x02,0)||!bus.writeVerify(0x5a,0x01,5,0x47)||
        !bus.writeVerify(0x5a,0x02,amplitude)) return false;
     confirmed=MotorConfirmation::ON; return true;
   }
   bool check(uint8_t amplitude) {
-    if(!bus.select(3)||!bus.verify(0x5a,0x02,requested?amplitude:0)||
+    if(!bus.verify(0x5a,0x02,requested?amplitude:0)||
        !bus.verify(0x5a,0x01,requested?5:0x40,0x47)) {
       confirmed=MotorConfirmation::UNKNOWN; return false;
     }

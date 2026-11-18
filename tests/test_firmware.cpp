@@ -22,6 +22,17 @@ static void move(double a,double b,double c,uint32_t ms) {
   for(int j=0;j<3;j++)Wire.gyroY[j]=0;
 }
 int main() {
+  // Upstream motor works on every mux channel, even if mux writes NACK.
+  {
+    TwoWire wire; pp::CheckedBus<TwoWire> bus(wire);
+    pp::Motor<pp::CheckedBus<TwoWire>> motor(bus);
+    for(uint8_t channel=0;channel<8;channel++) {
+      assert(bus.select(channel));wire.muxNack=true;
+      assert(motor.start(32));assert(motor.check(32));assert(motor.stop());
+      assert(motor.check(32));assert(wire.channel==channel);
+      wire.muxNack=false;
+    }
+  }
   setup();advance(3000);
   assert(Wire.clockHz==400000);
   assert(Wire.motorRegs[0x17]==138);assert((Wire.motorRegs[0x1d]&0x68)==0x20);

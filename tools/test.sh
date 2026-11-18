@@ -17,3 +17,8 @@ ${CXX:-c++} -std=c++11 -O2 -Wall -Wextra -Werror -pedantic -fsanitize=address,un
 ${CXX:-c++} -std=c++11 -O2 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined \
   -DVQF_SINGLE_PRECISION -I tests/fakes -I firmware/PosturePal tests/test_firmware.cpp firmware/PosturePal/vqf.cpp -o "$test_dir/firmware-float"
 "$test_dir/firmware-float"
+
+# BLE framing/queue behavior; radio timing remains a physical bench check.
+${CXX:-c++} -std=c++11 -O2 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined \
+  -DARDUINO_NRF52840_FEATHER -I tests/fakes -I firmware/PosturePal tests/test_ble.cpp -o "$test_dir/ble"
+"$test_dir/ble"

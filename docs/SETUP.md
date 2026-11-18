@@ -8,7 +8,10 @@ original nRF52840 target; wiring, mounting, commands and calibration apply to bo
 
 Use the Feather's normal `Wire` SDA/SCL pins, common ground, and appropriate
 3.3 V logic/pull-ups. Verify wearable cable capacitance and 400 kHz signal quality.
-Only one mux channel is enabled at a time.
+Only one mux channel is enabled at a time. The single DRV2605L is wired to
+the upstream SDA/SCL bus and is accessible regardless of mux selection.
+Motor commands do not select a mux channel; the IMUs at 0x6A do not conflict
+with the driver at 0x5A.
 
 | Device | Mux channel | Seven-bit I2C address |
 |---|---:|---:|
@@ -16,7 +19,7 @@ Only one mux channel is enabled at a time.
 | T3 LSM6DSOX | 0 | 0x6A |
 | T12 LSM6DSOX | 1 | 0x6A |
 | L5 LSM6DSOX | 2 | 0x6A |
-| DRV2605L + ERM | 3 | 0x5A |
+| DRV2605L + ERM | Main bus (upstream SDA/SCL) | 0x5A |
 
 Pin these versions; do not substitute the Arduino Mbed nRF528x core:
 
@@ -154,7 +157,7 @@ guards, not demonstrated accuracy. Settings do not change the baseline. In `FAUL
 diagnostic commands, `retry`, and `motor off/on` are accepted.
 
 Settings, mapping, acknowledgment and baseline are RAM-only. Every reset requires
-repeating axes verification and calibration. USB is required for this setup and
+repeating axes verification and calibration. USB or the [nRF52840 BLE interface](BLE.md) can be used for setup and
 later commands; disconnecting it after calibration does not stop monitoring.
 No extra button or GPIO wiring is assumed.
 

@@ -1,5 +1,5 @@
 // PosturePal: three independent six-axis VQFs; heading-invariant regional tilt.
-// See ../../docs/SETUP.md before enabling haptics. No BLE or persistent storage.
+// See ../../docs/SETUP.md before enabling haptics. nRF52840 BLE support; no persistent storage.
 #include <Arduino.h>
 #if defined(ARDUINO_ARCH_SAMD)
 #if !defined(USE_TINYUSB)
@@ -18,6 +18,7 @@
 #include "vqf.hpp"
 #include "PostureCore.h"
 #include "CheckedBus.h"
+#include "PostureBle.h"
 
 #if defined(__FAST_MATH__)
 #error "PosturePal/VQF requires IEEE NaN handling. Set compiler.optimization_flag=-O2; see docs/SETUP.md."
@@ -48,15 +49,19 @@ class Logger {
 public:
   uint32_t dropped=0;
   void line(const char* format,...) {
-    if(!Serial) { ++dropped; return; }
+    if(!Serial&&!ppble::connected()) { ++dropped; return; }
     char text[640]; va_list args; va_start(args,format);
     int n=vsnprintf(text,sizeof(text)-1,format,args); va_end(args);
-    if(n<0||size_t(n)>=sizeof(text)-1||size_t(n+1)>sizeof(queue)-used) { ++dropped; return; }
+    if(n<0||size_t(n)>=sizeof(text)-1) { ++dropped; return; }
     text[n++]='\n';
+    ppble::line(text,size_t(n));
+    if(!Serial) return;
+    if(size_t(n)>sizeof(queue)-used) {++dropped;return;}
     for(int i=0;i<n;i++) { queue[head]=text[i]; head=(head+1)%sizeof(queue); }
     used+=size_t(n);
   }
   void drain() {
+    ppble::drain();
     if(!Serial) { used=0; tail=head; return; }
     int room=Serial.availableForWrite();
     if(room<=0||!used) return;
@@ -137,9 +142,10 @@ class PosturePal {
     }
     if(motorEnabled) {
       log.line("MODE hardware motor enabled (default after reset); buzz reports drive request, not measured vibration");
+      // DRV2605L is on upstream SDA/SCL at 0x5A; no mux channel selection.
       // stop() works without the Adafruit driver object being initialized.
-      if(!motor.stop()) { fault("initial motor stop failed; check mux 3 / DRV2605L"); return false; }
-      if(!bus.select(3)||!drv.begin(&Wire)) { fault("DRV2605L initialization failed"); return false; }
+      if(!motor.stop()) { fault("initial motor stop failed; check upstream DRV2605L 0x5A"); return false; }
+      if(!drv.begin(&Wire)) { fault("DRV2605L initialization failed"); return false; }
       uint8_t feedback,control3;
       if(!bus.read(0x5a,0x1a,&feedback,1)||!bus.read(0x5a,0x1d,&control3,1)||
          !bus.writeVerify(0x5a,0x1a,uint8_t(feedback&0x7f))||
@@ -274,7 +280,7 @@ class PosturePal {
     if(state!=State::MONITORING && state!=State::ALERT) return;
     alerts.update(deviation,now,settings);
     if(alerts.alert && state!=State::ALERT) {
-      if(motorEnabled&&(!bus.select(3)||!bus.verify(0x5a,0x17,MOTOR_OD_CLAMP)||!motor.start(MOTOR_RTP))) {
+      if(motorEnabled&&(!bus.verify(0x5a,0x17,MOTOR_OD_CLAMP)||!motor.start(MOTOR_RTP))) {
         fault("motor voltage clamp/start verification failed"); return;
       }
       lastMotor=now; transition(State::ALERT,"regional persistence reached");
@@ -284,6 +290,7 @@ class PosturePal {
   }
   void status() {
     log.line("POSTUREPAL firmware=feather-v3 calibration=3s-settle+2s-still vqf_bits=%u",unsigned(sizeof(vqf_real_t)*8));
+    log.line("PROTOCOL version=1 transport=newline-ascii");
     log.line("FILTER tau_acc_s=1.0 baseline=fixed; use sense for gravity comparison");
     log.line("CAL_INFO gate=gyro-and-gravity max_speed_dps=5 max_accel_error_percent=10 max_sway_deg=2 last_blocker=%s",calWaitReason);
     log.line("TIMING max_loop_us=%lu max_filter_us=%lu max_diag_us=%lu max_command_us=%lu gap_limit_us=%lu",
@@ -310,9 +317,9 @@ class PosturePal {
     log.line("COMMANDS calibrate | pause | resume | retry | set <upperTrigger> <upperRecovery> <lowerTrigger> <lowerRecovery> <durationMs>");
     log.line("EXAMPLE axes +Y +Z only if +Y points headward and +Z outward; mount-ok then hold neutral for about 5 s");
   }
-  void command() {
+  void command(char* commandText=nullptr) {
     char* tokens[8]; int count=0; char* save=nullptr;
-    for(char* t=strtok_r(input," \t",&save);t;t=strtok_r(nullptr," \t",&save)) {
+    for(char* t=strtok_r(commandText?commandText:input," \t",&save);t;t=strtok_r(nullptr," \t",&save)) {
       if(count==8) { log.line("ERR too many arguments"); return; } tokens[count++]=t;
     }
     if(!count) return;
@@ -442,12 +449,15 @@ public:
   }
   void begin() {
     Serial.begin(115200); // No wait: battery operation must not depend on a USB host.
+    ppble::begin();
     Wire.begin(); Wire.setClock(400000);
     initialize(); help();
   }
   void tick() {
     uint32_t loopStart=micros();
     serialInput();
+    char bleCommand[160];
+    if(ppble::take(bleCommand)) command(bleCommand);
     uint32_t commandUs=micros()-loopStart; if(commandUs>maxCommandUs) maxCommandUs=commandUs;
     if(state!=State::FAULT) {
       uint32_t us=micros();
