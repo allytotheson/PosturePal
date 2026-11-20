@@ -16,9 +16,9 @@ with the driver at 0x5A.
 | Device | Mux channel | Seven-bit I2C address |
 |---|---:|---:|
 | PCA9548A | upstream | 0x70 |
-| T3 LSM6DSOX | 2 | 0x6A |
+| T3 LSM6DSOX | 0 | 0x6A |
 | T12 LSM6DSOX | 1 | 0x6A |
-| L5 LSM6DSOX | 0 | 0x6A |
+| L5 LSM6DSOX | 2 | 0x6A |
 | DRV2605L + ERM | Main bus (upstream SDA/SCL) | 0x5A |
 
 Pin these versions; do not substitute the Arduino Mbed nRF528x core:
@@ -198,8 +198,8 @@ Detailed values appear **only when explicitly requested**:
 - `status`: state, fault reason, timing maxima, driver confirmation, settings,
   baseline and mapping. `MOTOR buzz=0 motor=UNKNOWN` means stop was requested but
   not confirmed. The physical motor could still be running.
-- `sense`: three sensor lines for mounting checks; `imu=0` is L5, `imu=1` T12,
-  `imu=2` T3. Each shows `vqf_deg`, `neutral_delta_deg`, `gravity_deg`,
+- `sense`: three sensor lines for mounting checks; `imu=0` is T3, `imu=1` T12,
+  `imu=2` L5. Each shows `vqf_deg`, `neutral_delta_deg`, `gravity_deg`,
   `filter_minus_gravity_deg`, `gyro_dps`, `rest` and `mean_hz` (since initialization).
   Check `valid=1` and `neutral_valid=1` before interpreting neutral changes.
   `gravity_quiet=1` means the current acceleration norm and gyro magnitude pass
@@ -272,7 +272,7 @@ repeat after about ten seconds without moving. Compare the per-sensor rows:
 - `mean_hz` materially below 104: investigate acquisition throughput. This is an
   average since initialization and does not prove no individual samples were lost.
 
-Verify channel placement by moving each sensor separately: 0=L5, 1=T12, 2=T3.
+Verify channel placement by moving each sensor separately: 0=T3, 1=T12, 2=L5.
 On a rigid fixture, test neutral, bend, and return before testing on a wearer.
 Wait for the readings to settle before intentional `calibrate`; calibration
 changes the reference, so do not repeatedly zero it during the diagnostic test.
@@ -298,7 +298,7 @@ Use a space in these commands: `motor-on` and `motor-off` are rejected with a
 syntax reminder and do not change mode. Initialization prints an explicit mode
 banner. `buzz=1` is a software request/decision, not proof of physical vibration.
 
-Near-full-scale faults now report the zero-based IMU/channel (0=L5, 1=T12, 2=T3),
+Near-full-scale faults now report the zero-based IMU/channel (0=T3, 1=T12, 2=L5),
 source (`gyro` or `accel`), X/Y/Z sensor axis and signed raw value. The unchanged
 raw guard rejects values at or beyond +/-32000. Keep this information when
 reporting a fault; it distinguishes a gyro-rate event from an acceleration event,
@@ -352,7 +352,7 @@ itself.
 
 ## Fault timing trace (feather-v4-timing)
 
-Placement is now mux/IMU 0=L5, 1=T12, 2=T3. Board axis mapping is unchanged;
+Verified current placement is mux/IMU 0=T3, 1=T12, 2=L5. Board axis mapping is unchanged;
 recalibrate after uploading. Upper remains T3 minus T12; lower remains T12 minus L5.
 
 The firmware keeps the last 32 loop timing records in RAM and freezes them on

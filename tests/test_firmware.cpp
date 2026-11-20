@@ -18,6 +18,10 @@ std::string bleOutput;
 static void advance(uint32_t ms) {for(uint32_t i=0;i<ms;i++){fakeUs+=1000;loop();}}
 static bool outputHas(const char* s) {return Serial.output.find(s)!=std::string::npos;}
 static void send(const char* s) {Serial.output.clear();Serial.input=std::string(s)+"\n";advance(100);}
+static void lastAngles(double& upper,double& lower) {
+  size_t at=Serial.output.rfind("upper_deg=");assert(at!=std::string::npos);
+  assert(std::sscanf(Serial.output.c_str()+at,"upper_deg=%lf lower_deg=%lf",&upper,&lower)==2);
+}
 static void move(double a,double b,double c,uint32_t ms) {
   double start[3]={Wire.angle[0],Wire.angle[1],Wire.angle[2]},target[3]={a,b,c};
   for(int j=0;j<3;j++)Wire.gyroY[j]=(target[j]-start[j])*1000/ms;
@@ -43,7 +47,7 @@ int main() {
   assert(Wire.clockHz==400000);
   assert(Wire.motorRegs[0x17]==138);assert((Wire.motorRegs[0x1d]&0x68)==0x20);
   assert(!outputHas("upper_deg="));assert(!outputHas("SENSE"));
-  send("sense");assert(outputHas("SENSE imu=0 site=L5")); // Explicit diagnostics remain available.
+  send("sense");assert(outputHas("SENSE imu=0 site=T3")); // Explicit diagnostics remain available.
   send("status");assert(outputHas("trigger=7.50,7.50 recovery=4.00,4.00 duration_ms=2000"));
   assert(Wire.motorRegs[2]==0); send("resume");assert(outputHas("ERR mounting"));
   send("mount-ok");assert(outputHas("ERR configure axes"));
@@ -59,6 +63,15 @@ int main() {
   size_t lines=0,pos=0;
   while((pos=Serial.output.find("upper_deg=",pos))!=std::string::npos) { ++lines; ++pos; }
   assert(lines==3); // One compact reading per second.
+  // Actual VQF/sketch telemetry must assign isolated physical fixtures to the
+  // correct region with the expected sign (0 upper, 1 middle, 2 lower).
+  double fixtureUpper,fixtureLower;
+  move(15,0,0,2000);advance(2000);lastAngles(fixtureUpper,fixtureLower);
+  assert(fixtureUpper>10&&std::fabs(fixtureLower)<1);
+  move(0,0,0,2000);advance(3000);
+  move(0,0,-15,2000);advance(2000);lastAngles(fixtureUpper,fixtureLower);
+  assert(std::fabs(fixtureUpper)<1&&fixtureLower>10);
+  move(0,0,0,2000);advance(3000);assert(Wire.motorRegs[2]==0);
   // Simulated fixed gyro bias: no neutral drift alert, no baseline adaptation
   // during a sustained slouch, and recovery when the actual fixture returns.
   Wire.gyroBiasY[2]=1.0;advance(30000);assert(Wire.motorRegs[2]==0);

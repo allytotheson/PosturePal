@@ -307,8 +307,8 @@ class PosturePal {
       bool still=true;
       // VQF's bias-estimator rest flag is deliberately strict; do not use it as
       // a wearable calibration gate. Use explicit motion/gravity limits instead.
-      const char* motionReason[3]={"lower sensor moving too quickly","middle sensor moving too quickly","upper sensor moving too quickly"};
-      const char* accelReason[3]={"lower sensor acceleration not steady","middle sensor acceleration not steady","upper sensor acceleration not steady"};
+      const char* motionReason[3]={"upper sensor moving too quickly","middle sensor moving too quickly","lower sensor moving too quickly"};
+      const char* accelReason[3]={"upper sensor acceleration not steady","middle sensor acceleration not steady","lower sensor acceleration not steady"};
       for(uint8_t i=0;i<3;i++) {
         if(angularSpeedDps[i]>5.0) { still=false;calWaitReason=motionReason[i];break; }
         if(std::fabs(accelerationNorm[i]-G)>0.10*G) { still=false;calWaitReason=accelReason[i];break; }
@@ -343,7 +343,7 @@ class PosturePal {
 #else
     log.line("BUS_DRIVER platform-default");
 #endif
-    log.line("MAPPING imu0=L5 imu1=T12 imu2=T3 trace_frozen=%d log_dropped=%lu",traceFrozen,(unsigned long)log.dropped);
+    log.line("MAPPING imu0=T3 imu1=T12 imu2=L5 trace_frozen=%d log_dropped=%lu",traceFrozen,(unsigned long)log.dropped);
     log.line("FILTER tau_acc_s=1.0 baseline=fixed; use sense for gravity comparison");
     log.line("CAL_INFO gate=gyro-and-gravity max_speed_dps=5 max_accel_error_percent=10 max_sway_deg=2 last_blocker=%s",calWaitReason);
     log.line("TIMING max_loop_us=%lu max_filter_us=%lu max_diag_us=%lu max_command_us=%lu gap_limit_us=%lu",
@@ -497,7 +497,7 @@ class PosturePal {
     bool projected=have[i]&&pp::sagittalTilt(alignment[i].apply(measuredUp[i]),gravityTilt);
     bool quiet=projected&&std::fabs(accelerationNorm[i]-G)<=0.10*G&&angularSpeedDps[i]<=5;
     uint32_t runtime=micros()-bootUs;
-    const char* names[3]={"L5","T12","T3"};
+    const char* names[3]={"T3","T12","L5"};
     log.line("SENSE imu=%u site=%s valid=%d neutral_valid=%d vqf_deg=%.2f neutral_delta_deg=%.2f gravity_deg=%.2f gravity_quiet=%d filter_minus_gravity_deg=%.2f gyro_dps=%.2f rest=%d mean_hz=%.1f",
       unsigned(i),names[i],have[i]&&geometryValid&&state!=State::FAULT,baselineValid,
       tilt[i],baselineValid?pp::wrap(tilt[i]-sensorNeutral[i]):0,gravityTilt,quiet,
