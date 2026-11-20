@@ -7,6 +7,12 @@
 uint32_t fakeUs=0;
 FakeSerial Serial;
 TwoWire Wire;
+#if defined(ARDUINO_NRF52840_FEATHER)
+#include "bluefruit.h"
+FakeBluefruit Bluefruit;
+bool congested=false;
+std::string bleOutput;
+#endif
 #include "../firmware/PosturePal/PosturePal.ino"
 
 static void advance(uint32_t ms) {for(uint32_t i=0;i<ms;i++){fakeUs+=1000;loop();}}
@@ -126,10 +132,26 @@ int main() {
   send("status");assert(outputHas("state=CALIBRATING"));
   for(int i=0;i<3;i++) Wire.gyroY[i]=0;
   advance(10000);send("status");assert(outputHas("state=MONITORING"));
+  send("trace 1");assert(outputHas("trace requires FAULT"));
+  // Distinguish gyro-not-ready polling from a loop stall; preserve the ring
+  // through fault/readback, and drain a bounded oldest-first trace only on request.
+  Wire.readyOverride[1]=1;advance(20);Wire.readyOverride[1]=-1;advance(20);
+  send("status");assert(outputHas("fault=IMU gap imu=1"));
+  send("trace 1 extra");assert(outputHas("trace requires one IMU index"));
+  send("trace -1");assert(outputHas("trace requires one IMU index"));
+  send("trace 3");assert(outputHas("trace requires one IMU index"));
+  send("trace 1");assert(outputHas("TRACE begin imu=1 count=32"));
+  send("trace 0");assert(outputHas("trace output busy"));
+  advance(3500);assert(outputHas("ready=0x01 result=0"));
+  assert(outputHas("ready=0x03 result=5"));assert(outputHas("TRACE end imu=1"));
+  assert(Wire.motorRegs[2]==0);
+  send("retry");advance(7000);send("status");assert(outputHas("state=MONITORING"));
   // A real scheduling discontinuity remains a fault; include the sensor and duration.
   fakeUs+=20000;advance(100);send("status");
   assert(outputHas("fault=IMU gap imu=0 gap_us="));
   assert(outputHas("limit_us=16000"));assert(Wire.motorRegs[2]==0);
+  send("trace 0");advance(3500);assert(outputHas("tick_us=21000 poll_us=21000"));
+  assert(outputHas("result=5"));assert(outputHas("TRACE end imu=0"));
   Wire.sensorNack[1]=true;send("scan");advance(300);
   assert(outputHas("BUS hz=100000 channel=0 addr=0x6A read=OK id=0x6C lsm6dsox=1"));
   assert(outputHas("BUS hz=400000 channel=0 addr=0x6A read=OK"));
@@ -160,5 +182,12 @@ int main() {
   send("retry");advance(7000);assert(Wire.motorRegs[0x17]==138);
   Wire.rawGyroX[2]=-32200;advance(100);send("status");
   assert(outputHas("source=gyro axis=X raw=-32200 limit=32000"));
+  // Bus-speed A/B diagnostics are explicit, retain fault guards, and cannot
+  // reconfigure an actively monitoring wearable.
+  Wire.rawGyroX[2]=0;send("bus-rate 100000");assert(Wire.clockHz==100000);
+  advance(7000);send("status");assert(outputHas("BUS_CONFIG hz=100000"));
+  send("bus-rate 400000");assert(outputHas("requires FAULT or PAUSED"));assert(Wire.clockHz==100000);
+  send("pause");send("bus-rate 250000");assert(outputHas("must be 100000 or 400000"));assert(Wire.clockHz==100000);
+  send("bus-rate 400000");assert(Wire.clockHz==400000);
   std::puts("PASS: actual sketch boot/mount gate, calibration, commands, common lean, alert/recovery, pause/resume, sensor/motor faults, retry, no-USB monitoring");
 }

@@ -317,3 +317,35 @@ signal-quality issue, not proof that all wiring is otherwise correct.
 The scan does not change configured sensor mappings and does not auto-resume;
 send `retry` after correcting the cause. It runs only in FAULT so diagnostic bus
 work cannot disrupt active sampling. Normal 400 kHz is restored afterward.
+
+## Controlled bus-speed comparison
+
+`bus-rate 100000` and `bus-rate 400000` are diagnostic commands accepted only in
+FAULT or PAUSED. They reinitialize the hardware (and restart calibration if
+mounting was acknowledged), retain every sensor/motor fault guard, and persist in
+RAM across retry but not reboot. Default operation remains 400 kHz. `status`
+reports `BUS_CONFIG hz=...`; `scan` temporarily tests both rates then restores the
+selected rate. Use this A/B test to investigate signal quality and timing without
+silently weakening sample-gap limits. A slower bus is not assumed to fix a fault.
+
+`SCHED` reports maximum time between loop/poll calls, including time outside the
+sketch's loop body. `IMU_TIMING` reports per-sensor sample counts, maximum sample
+gaps and the last data-ready state while waiting; in STATUS_REG, 0x01 means only
+accelerometer data is ready and 0x02 means only gyro data is ready (other bits may
+also be set). These counters localize a failure; they do not prove its electrical
+or sensor-internal cause. `sense` values are cached and invalid after FAULT.
+
+Before retrying a sampling fault, request `trace 0`, `trace 1` or `trace 2` for
+the affected IMU. The last 32 polls are retained in a fixed-size RAM ring and
+freeze when acquisition stops. Output is oldest-first, one row every 100 ms;
+wait for `TRACE end` before requesting another sensor. This command requires
+FAULT, and initialization clears the trace. Each row contains the board's
+`at_us`, age since the previous accepted sample, loop/poll intervals and elapsed
+bus time (before VQF), plus raw STATUS_REG and a result code: 0 waiting, 1 sample
+read, 2 mux-select failure, 3 status-read failure, 4 data-read failure, 5 sample
+gap. A sample-read result can still be rejected by later range/geometry checks.
+`ready=0xFF` is a sentinel when no status could be read. Times use the board's
+`micros()` resolution, including its coarse tick fallback on nRF; unsigned
+durations handle clock wrap. The trace adds no acquisition-path printing or
+dynamic allocation, and does not relax any fault guard or establish a cause by
+itself.

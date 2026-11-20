@@ -1,3 +1,10 @@
 /build/
 .DS_Store
 __pycache__/
+
+# Desktop dependencies, caches and local recordings
+.venv/
+*.egg-info/
+*.py[cod]
+*.sqlite3*
+.ruff_cache/

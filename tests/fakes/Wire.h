@@ -6,6 +6,7 @@ struct TwoWire {
   uint8_t channel=0,addr=0,reg=0;
   uint8_t sensorRegs[3][256]={},motorRegs[256]={};
   bool sensorNack[3]={},freeze[3]={},motorNack=false,muxNack=false,shortRead=false;
+  int readyOverride[3]={-1,-1,-1}; // Reproduce one missing data-ready source.
   double angle[3]={},gyroY[3]={},gyroBiasY[3]={};
   int16_t rawAccelX[3]={},rawGyroX[3]={}; // Nonzero overrides for range-fault tests.
   uint32_t lastSample[3]={};
@@ -41,7 +42,7 @@ struct TwoWire {
     rx.assign(n,0);pos=0;
     if(addr==0x5a)for(size_t i=0;i<n;i++)rx[i]=motorRegs[uint8_t(reg+i)];
     else if(channel<3) {
-      if(reg==0x1e&&n==1)rx[0]=!freeze[channel]&&fakeUs/9615!=lastSample[channel]?3:0;
+      if(reg==0x1e&&n==1)rx[0]=readyOverride[channel]>=0?uint8_t(readyOverride[channel]):!freeze[channel]&&fakeUs/9615!=lastSample[channel]?3:0;
       else if(reg==0x22&&n==12) {
         lastSample[channel]=fakeUs/9615;
         double radians=angle[channel]*3.141592653589793/180;
