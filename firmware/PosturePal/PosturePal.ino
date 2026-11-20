@@ -95,6 +95,9 @@ class PosturePal {
   pp::Vec measuredUp[3]={}; // Accelerometer-only reference, meaningful when held still.
   uint32_t stamp[3]={},samples[3]={},maxGap[3]={};
   uint32_t bootUs=0,stateStart=0,calStart=0,lastPoll=0,lastDiag=0,lastMotor=0,skew=0;
+  uint32_t previousTick=0,maxTickGap=0,maxPollGap=0,lastTickGap=0;
+  bool haveTick=false;
+  uint32_t maxNotReadyAge[3]={};uint8_t lastNotReady[3]={};
   uint32_t lastConfigCheck=0,lastCalProgress=0;
   uint32_t maxLoopUs=0,maxFilterUs=0,maxDiagUs=0,maxCommandUs=0;
   uint8_t configSensor=0;
@@ -138,6 +141,7 @@ class PosturePal {
     baselineValid=false; geometryValid=false; alerts.reset(); calibration.reset();
     for(uint8_t i=0;i<3;i++) {
       have[i]=newSample[i]=rest[i]=false; stamp[i]=samples[i]=maxGap[i]=0;
+      maxNotReadyAge[i]=0;lastNotReady[i]=0;
       filters[i].resetState();
     }
     if(motorEnabled) {
@@ -184,6 +188,7 @@ class PosturePal {
       if(!bus.select(i)||!bus.read(ADDR[i],0x22,discard,12)) { fault("IMU startup flush failed"); return false; }
     }
     bootUs=lastPoll=micros(); lastMotor=lastConfigCheck=millis();
+    haveTick=false;maxTickGap=maxPollGap=lastTickGap=0;
     if(mountOK) beginCalibration();
     else transition(State::PAUSED,"unverified axes: use axes <headward> <outward>, then mount-ok");
     return state!=State::FAULT;
@@ -199,6 +204,9 @@ class PosturePal {
     if(!bus.read(ADDR[i],0x1e,&ready,1)) { fault("IMU status read failed"); return false; }
     uint32_t now=micros();
     if((ready&3)!=3) {
+      lastNotReady[i]=ready;
+      uint32_t age=have[i]?now-stamp[i]:0;
+      if(age>maxNotReadyAge[i])maxNotReadyAge[i]=age;
       if(pp::elapsed(now,have[i]?stamp[i]:bootUs,pp::STALE_US)) { fault("IMU stale/data-ready timeout"); return false; }
       return true;
     }
@@ -208,8 +216,8 @@ class PosturePal {
     now=micros();
     if(pp::sampleGap(now,stamp[i],have[i])) {
       char reason[100];
-      snprintf(reason,sizeof(reason),"IMU gap imu=%u gap_us=%lu limit_us=%lu",unsigned(i),
-        (unsigned long)(now-stamp[i]),(unsigned long)pp::GAP_US);
+      snprintf(reason,sizeof(reason),"IMU gap imu=%u gap_us=%lu limit_us=%lu tick_gap_us=%lu",unsigned(i),
+        (unsigned long)(now-stamp[i]),(unsigned long)pp::GAP_US,(unsigned long)lastTickGap);
       fault(reason); return false;
     }
     if(have[i] && now-stamp[i]>maxGap[i]) maxGap[i]=now-stamp[i];
@@ -296,6 +304,10 @@ class PosturePal {
     log.line("TIMING max_loop_us=%lu max_filter_us=%lu max_diag_us=%lu max_command_us=%lu gap_limit_us=%lu",
       (unsigned long)maxLoopUs,(unsigned long)maxFilterUs,(unsigned long)maxDiagUs,
       (unsigned long)maxCommandUs,(unsigned long)pp::GAP_US);
+    log.line("SCHED max_tick_gap_us=%lu max_poll_gap_us=%lu last_tick_gap_us=%lu",
+      (unsigned long)maxTickGap,(unsigned long)maxPollGap,(unsigned long)lastTickGap);
+    for(uint8_t i=0;i<3;i++)log.line("IMU_TIMING imu=%u samples=%lu max_sample_gap_us=%lu max_notready_age_us=%lu last_notready=0x%02X",
+      unsigned(i),(unsigned long)samples[i],(unsigned long)maxGap[i],(unsigned long)maxNotReadyAge[i],unsigned(lastNotReady[i]));
     log.line("STATUS state=%s mount_configured=%d mount_ok=%d baseline_valid=%d geometry_valid=%d fault=%s",
       stateName(state),mountConfigured,mountOK,baselineValid,geometryValid,faultMessage);
     log.line("MOTOR buzz=%d motor=%s enabled=%d",motorEnabled?motor.requested:alerts.alert,
@@ -455,6 +467,8 @@ public:
   }
   void tick() {
     uint32_t loopStart=micros();
+    if(haveTick) {lastTickGap=loopStart-previousTick;if(lastTickGap>maxTickGap)maxTickGap=lastTickGap;}
+    previousTick=loopStart;haveTick=true;
     serialInput();
     char bleCommand[160];
     if(ppble::take(bleCommand)) command(bleCommand);
@@ -462,6 +476,7 @@ public:
     if(state!=State::FAULT) {
       uint32_t us=micros();
       if(pp::elapsed(us,lastPoll,POLL_US)) {
+        uint32_t pollGap=us-lastPoll;if(pollGap>maxPollGap)maxPollGap=pollGap;
         lastPoll=us;
         for(uint8_t i=0;i<3;i++) if(!acquire(i)) break;
         if(state!=State::FAULT) evaluate();
