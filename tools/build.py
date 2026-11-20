@@ -32,7 +32,7 @@ else:
     # Cortex-M4F hardware supports float, not the VQF double default.
     # Keep the sample/fault limits intact; verify vqf_bits=32 and timing on hardware.
     build_args = ["--build-property", "compiler.optimization_flag=-O2",
-                  "--build-property", "compiler.cpp.extra_flags=-DVQF_SINGLE_PRECISION"]
+                  "--build-property", "compiler.cpp.extra_flags=-DVQF_SINGLE_PRECISION -DPOSTUREPAL_REQUIRE_HW_WIRE"]
 CLI = os.environ.get("ARDUINO_CLI") or shutil.which("arduino-cli")
 MAC_CLI = "/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli"
 if not CLI and Path(MAC_CLI).is_file():
@@ -62,6 +62,16 @@ for name, checksum in {
     if hashlib.sha256((ROOT / "firmware/PosturePal" / name).read_bytes()).hexdigest() != checksum:
         sys.exit(f"Vendored {name} differs from official VQF 2.1.2")
 build_dir = Path(os.environ.get("POSTUREPAL_BUILD_DIR", ROOT / "build" / output_name)).resolve()
+if args.board == "nrf52840":
+    from nrf_wire import prepare
+    details = query("board", "details", "--fqbn", fqbn)
+    properties = dict(p.split("=", 1) for p in details["build_properties"])
+    platform_path = Path(properties["runtime.platform.path"])
+    try:
+        wire = prepare(platform_path, build_dir.parent / (build_dir.name + "-Wire"))
+    except (OSError, ValueError) as error:
+        sys.exit(f"Cannot prepare nRF Wire override: {error}")
+    library_args.extend(["--library", str(wire)])
 command = [CLI, "compile", "--fqbn", fqbn, "--warnings", "all",
            "--build-path", str(build_dir), *build_args,
            *library_args, str(ROOT / "firmware/PosturePal")]

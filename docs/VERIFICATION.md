@@ -332,3 +332,18 @@ sketch configuration. Tests verify reversed regional signs/order, fault trace
 replay, a simulated USB write stall attributed to usb=20000, and an external
 20 ms scheduling gap. Feather M4 build passes (107492 bytes flash). No firmware
 was uploaded; real hardware timing behavior remains to be measured.
+
+## nRF master transfer boundary candidate
+
+The pinned nRF Wire master completes transfers with CPU-triggered STOP/SUSPEND
+after LASTRX/LASTTX. A build-local, hash-checked override now uses hardware
+shortcuts for nonempty transfers, following Nordic's TWIM byte-boundary timing
+requirements. The installed core is not modified. The same replacement methods
+are executed by a register-model regression that demonstrates extra clocks
+with a delayed software-only stop and no extra clocks with hardware completion.
+NACK/error cleanup, repeated starts and bounded receives are also exercised.
+This models the proposed mechanism, not a physical waveform capture.
+
+All firmware host suites pass with UBSan; the pinned nRF52840 build succeeds
+with the override selected. Hardware validation of this candidate is pending.
+The existing fault guards and the teammate's timing trace remain unchanged.

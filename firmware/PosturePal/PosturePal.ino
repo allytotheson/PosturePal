@@ -11,6 +11,9 @@
 #include <Adafruit_TinyUSB.h>
 #endif
 #include <Wire.h>
+#if defined(POSTUREPAL_REQUIRE_HW_WIRE) && !defined(POSTUREPAL_WIRE_HW_BOUNDARIES)
+#error "Expected build-local nRF Wire hardware-boundary override; use tools/build.py."
+#endif
 #include <Adafruit_LSM6DSOX.h>
 #include <Adafruit_DRV2605.h>
 #include <cstdarg>
@@ -335,6 +338,11 @@ class PosturePal {
     log.line("POSTUREPAL firmware=feather-v4-timing calibration=3s-settle+2s-still vqf_bits=%u",unsigned(sizeof(vqf_real_t)*8));
     log.line("PROTOCOL version=1 transport=newline-ascii");
     log.line("BUS_CONFIG hz=%lu",(unsigned long)busHz);
+#if defined(POSTUREPAL_WIRE_HW_BOUNDARIES)
+    log.line("BUS_DRIVER nrf52-hardware-boundaries");
+#else
+    log.line("BUS_DRIVER platform-default");
+#endif
     log.line("MAPPING imu0=L5 imu1=T12 imu2=T3 trace_frozen=%d log_dropped=%lu",traceFrozen,(unsigned long)log.dropped);
     log.line("FILTER tau_acc_s=1.0 baseline=fixed; use sense for gravity comparison");
     log.line("CAL_INFO gate=gyro-and-gravity max_speed_dps=5 max_accel_error_percent=10 max_sway_deg=2 last_blocker=%s",calWaitReason);

@@ -373,3 +373,35 @@ Repeated not-ready status with fast polling suggests a sensor/data-ready issue.
 `status` includes mapping, trace state, and the cumulative log_dropped counter;
 if output was dropped, wait for the queue to drain and replay with `timing`.
 The 16 ms gap limit and filter sample period are unchanged.
+
+## nRF I2C transfer boundaries
+
+Build the nRF52840 firmware with `python3 tools/build.py --board nrf52840`.
+The helper verifies the SHA-256 of the pinned core's Wire source/header and
+creates a build-local Wire library beside the build directory. It does not
+modify the installed core. The generated library preserves the upstream LGPL
+notices and replaces only the master transfer methods using
+`tools/nrf_wire_master.inc`. The Feather M4 build uses its normal Wire library.
+
+The stock Adafruit nRF52 1.7.0 master driver waits for LASTRX/LASTTX in software
+before issuing STOP/SUSPEND. Nordic's [nRF52840 TWIM specification](https://docs.nordicsemi.com/r/bundle/ps_nrf52840/page/twim.html)
+states that DMA buffer completion does not stop the bus and recommends a
+LASTRX-to-STOP hardware shortcut. An interrupt at a byte boundary can delay a
+software-only stop without causing a long loop-level stall. Extra register
+reads can have sensor side effects even if DMA reports the requested count.
+This is a driver defect hypothesis for the observed readout failures; a timing
+trace alone does not prove which bytes were clocked on the physical bus.
+
+The override installs LASTRX/LASTTX STOP or SUSPEND shortcuts before START and
+waits for the completion event. Errors are stopped and cleared; failed reads
+expose no stale bytes. Empty address-only probes retain the core's existing
+software path because there is no final data byte. Interrupts remain enabled.
+No sample-gap, freshness, raw-range, calibration or motor limits are relaxed.
+
+`status` must report `BUS_DRIVER nrf52-hardware-boundaries` on the fixed nRF
+build. The build helper fails compilation if a conflicting Wire header is
+selected. A direct Arduino IDE build does not automatically include this
+override and reports `BUS_DRIVER platform-default`; use the helper for the fix.
+Host register-model tests exercise the actual replacement methods with a
+delayed CPU, repeated starts, STOP/SUSPEND, buffer bounds, NACK and recovery.
+They do not replace physical bus captures or sustained hardware testing.
