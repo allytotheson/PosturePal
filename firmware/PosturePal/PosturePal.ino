@@ -109,6 +109,14 @@ class PosturePal {
   uint32_t lastTraceOutput=0;
   uint32_t lastConfigCheck=0,lastCalProgress=0;
   uint32_t maxLoopUs=0,maxFilterUs=0,maxDiagUs=0,maxCommandUs=0;
+  // Integer-only rolling trace; formatting is deferred until sampling has faulted.
+  struct TimingRow {
+    uint32_t at=0, gap=0, command=0, acquire[3]={}, evaluation=0, maintenance=0, diag=0, usb=0;
+    uint8_t ready[3]={};
+  } trace[32], currentTiming;
+  uint8_t traceHead=0,loopTraceCount=0,tracePending=0,traceRead=0;
+  uint32_t lastTracePrint=0;
+  bool traceFrozen=false;
   uint8_t configSensor=0;
   uint8_t pendingSense=3; // Three means idle; emit requested detail over separate loops.
   uint8_t scanStep=16; // Fault-only bus diagnostic: eight channels at two clock rates.
@@ -149,6 +157,7 @@ class PosturePal {
   bool initialize() {
     baselineValid=false; geometryValid=false; alerts.reset(); calibration.reset();
     pendingTrace=TRACE_DEPTH;
+    traceHead=loopTraceCount=tracePending=0; traceFrozen=false; previousTick=0;
     for(uint8_t i=0;i<3;i++) {
       have[i]=newSample[i]=rest[i]=false; stamp[i]=samples[i]=maxGap[i]=0;
       maxNotReadyAge[i]=0;lastNotReady[i]=0;
@@ -224,6 +233,7 @@ class PosturePal {
     if(!bus.select(i)) {recordPoll(i,start,0xff,2);return acquisitionFault(i,"mux select failed during sampling");}
     uint8_t ready;
     if(!bus.read(ADDR[i],0x1e,&ready,1)) {recordPoll(i,start,0xff,3);return acquisitionFault(i,"IMU status read failed");}
+    currentTiming.ready[i]=ready;
     uint32_t now=micros();
     if((ready&3)!=3) {
       recordPoll(i,start,ready,0);
@@ -294,8 +304,8 @@ class PosturePal {
       bool still=true;
       // VQF's bias-estimator rest flag is deliberately strict; do not use it as
       // a wearable calibration gate. Use explicit motion/gravity limits instead.
-      const char* motionReason[3]={"upper sensor moving too quickly","middle sensor moving too quickly","lower sensor moving too quickly"};
-      const char* accelReason[3]={"upper sensor acceleration not steady","middle sensor acceleration not steady","lower sensor acceleration not steady"};
+      const char* motionReason[3]={"lower sensor moving too quickly","middle sensor moving too quickly","upper sensor moving too quickly"};
+      const char* accelReason[3]={"lower sensor acceleration not steady","middle sensor acceleration not steady","upper sensor acceleration not steady"};
       for(uint8_t i=0;i<3;i++) {
         if(angularSpeedDps[i]>5.0) { still=false;calWaitReason=motionReason[i];break; }
         if(std::fabs(accelerationNorm[i]-G)>0.10*G) { still=false;calWaitReason=accelReason[i];break; }
@@ -322,9 +332,10 @@ class PosturePal {
     }
   }
   void status() {
-    log.line("POSTUREPAL firmware=feather-v3 calibration=3s-settle+2s-still vqf_bits=%u",unsigned(sizeof(vqf_real_t)*8));
+    log.line("POSTUREPAL firmware=feather-v4-timing calibration=3s-settle+2s-still vqf_bits=%u",unsigned(sizeof(vqf_real_t)*8));
     log.line("PROTOCOL version=1 transport=newline-ascii");
     log.line("BUS_CONFIG hz=%lu",(unsigned long)busHz);
+    log.line("MAPPING imu0=L5 imu1=T12 imu2=T3 trace_frozen=%d log_dropped=%lu",traceFrozen,(unsigned long)log.dropped);
     log.line("FILTER tau_acc_s=1.0 baseline=fixed; use sense for gravity comparison");
     log.line("CAL_INFO gate=gyro-and-gravity max_speed_dps=5 max_accel_error_percent=10 max_sway_deg=2 last_blocker=%s",calWaitReason);
     log.line("TIMING max_loop_us=%lu max_filter_us=%lu max_diag_us=%lu max_command_us=%lu gap_limit_us=%lu",
@@ -350,6 +361,7 @@ class PosturePal {
   }
   void help() {
     log.line("COMMANDS scan (in FAULT): check IMU IDs on all mux channels at 100/400 kHz");
+    log.line("COMMANDS timing: replay frozen fault trace; retry clears trace");
     log.line("COMMANDS help | status | sense | axes <headward signed axis> <outward signed axis> | mount-ok");
     log.line("COMMANDS motor off (sensor-only) | motor on (require driver); mode resets on reboot");
     log.line("COMMANDS calibrate | pause | resume | retry | set <upperTrigger> <upperRecovery> <lowerTrigger> <lowerRecovery> <durationMs>");
@@ -372,6 +384,10 @@ class PosturePal {
       traceSensor=uint8_t(tokens[1][0]-'0');pendingTrace=0;lastTraceOutput=millis();
       log.line("TRACE begin imu=%u count=%u oldest-first; result=0:waiting,1:sample,2:mux,3:status,4:data,5:gap",unsigned(traceSensor),unsigned(traceCount[traceSensor]));
       return;
+    }
+    if(count==1&&!strcmp(tokens[0],"timing")) {
+      if(!traceFrozen) { log.line("TIMING trace available after a sampling fault"); return; }
+      traceRead=(traceHead+32-loopTraceCount)%32;tracePending=loopTraceCount;return;
     }
     if(count==1&&(!strcmp(tokens[0],"motor-on")||!strcmp(tokens[0],"motor-off"))) {
       log.line("ERR use motor on or motor off with a space; mode unchanged");return;
@@ -473,7 +489,7 @@ class PosturePal {
     bool projected=have[i]&&pp::sagittalTilt(alignment[i].apply(measuredUp[i]),gravityTilt);
     bool quiet=projected&&std::fabs(accelerationNorm[i]-G)<=0.10*G&&angularSpeedDps[i]<=5;
     uint32_t runtime=micros()-bootUs;
-    const char* names[3]={"T3","T12","L5"};
+    const char* names[3]={"L5","T12","T3"};
     log.line("SENSE imu=%u site=%s valid=%d neutral_valid=%d vqf_deg=%.2f neutral_delta_deg=%.2f gravity_deg=%.2f gravity_quiet=%d filter_minus_gravity_deg=%.2f gyro_dps=%.2f rest=%d mean_hz=%.1f",
       unsigned(i),names[i],have[i]&&geometryValid&&state!=State::FAULT,baselineValid,
       tilt[i],baselineValid?pp::wrap(tilt[i]-sensorNeutral[i]):0,gravityTilt,quiet,
@@ -526,18 +542,27 @@ public:
     uint32_t loopStart=micros();
     if(haveTick) {lastTickGap=loopStart-previousTick;if(lastTickGap>maxTickGap)maxTickGap=lastTickGap;}
     previousTick=loopStart;haveTick=true;
+    currentTiming=TimingRow{};currentTiming.at=loopStart;
+    currentTiming.gap=lastTickGap;
     serialInput();
     char bleCommand[160];
     if(ppble::take(bleCommand)) command(bleCommand);
     uint32_t commandUs=micros()-loopStart; if(commandUs>maxCommandUs) maxCommandUs=commandUs;
+    currentTiming.command=commandUs;
     if(state!=State::FAULT) {
       uint32_t us=micros();
       if(pp::elapsed(us,lastPoll,POLL_US)) {
         uint32_t pollGap=us-lastPoll;lastPollGap=pollGap;if(pollGap>maxPollGap)maxPollGap=pollGap;
         lastPoll=us;
-        for(uint8_t i=0;i<3;i++) if(!acquire(i)) break;
+        for(uint8_t i=0;i<3;i++) {
+          uint32_t start=micros();bool ok=acquire(i);
+          currentTiming.acquire[i]=micros()-start;if(!ok) break;
+        }
+        uint32_t evalStart=micros();
         if(state!=State::FAULT) evaluate();
+        currentTiming.evaluation=micros()-evalStart;
       }
+      uint32_t maintenanceStart=micros();
       uint32_t now=millis();
       if(state!=State::FAULT && pp::elapsed(now,lastMotor,250)) {
         lastMotor=now;
@@ -549,6 +574,7 @@ public:
         if(!imuConfig(configSensor)) fault("periodic IMU configuration/identity check failed");
         configSensor=(configSensor+1)%3;
       }
+      currentTiming.maintenance=micros()-maintenanceStart;
     } else if(pp::elapsed(millis(),lastMotor,250)) {
       lastMotor=millis(); if(motorEnabled) motor.stop(); // Remain latched FAULT even if shutdown succeeds.
     }
@@ -558,7 +584,26 @@ public:
     busDiagnostics();
     traceDiagnostics();
     uint32_t diagUs=micros()-diagStart; if(diagUs>maxDiagUs) maxDiagUs=diagUs;
-    log.drain();
+    currentTiming.diag=diagUs;
+    uint32_t usbStart=micros();log.drain();currentTiming.usb=micros()-usbStart;
+    if(!traceFrozen) {
+      trace[traceHead]=currentTiming;traceHead=(traceHead+1)%32;
+      if(loopTraceCount<32) ++loopTraceCount;
+      if(state==State::FAULT) {
+        traceFrozen=true;traceRead=(traceHead+32-loopTraceCount)%32;tracePending=loopTraceCount;
+      }
+    }
+    // Pace post-fault output so it does not flood the bounded serial queue.
+    if(tracePending && pp::elapsed(millis(),lastTracePrint,20)) {
+      lastTracePrint=millis();const TimingRow& r=trace[traceRead];
+      log.line("LOOP_TRACE at_us=%lu tick_gap=%lu cmd=%lu read_us=%lu,%lu,%lu ready_hex=%02X,%02X,%02X eval=%lu maint=%lu diag=%lu usb=%lu",
+        (unsigned long)r.at,(unsigned long)r.gap,(unsigned long)r.command,
+        (unsigned long)r.acquire[0],(unsigned long)r.acquire[1],(unsigned long)r.acquire[2],
+        unsigned(r.ready[0]),unsigned(r.ready[1]),unsigned(r.ready[2]),
+        (unsigned long)r.evaluation,(unsigned long)r.maintenance,(unsigned long)r.diag,(unsigned long)r.usb);
+      traceRead=(traceRead+1)%32;--tracePending;
+      if(!tracePending) log.line("LOOP_TRACE end");
+    }
     uint32_t loopUs=micros()-loopStart; if(loopUs>maxLoopUs) maxLoopUs=loopUs;
   }
 };

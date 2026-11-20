@@ -66,8 +66,8 @@ inline bool sagittalTilt(Vec up, double& sagittal) {
   return std::isfinite(sagittal);
 }
 inline void regions(const double tilt[3], double out[2]) {
-  // Sagittal tilts T3,T12,L5 -> upper and lower regional angles.
-  out[0]=wrap(tilt[0]-tilt[1]); out[1]=wrap(tilt[1]-tilt[2]);
+  // Mux channel order L5,T12,T3 -> anatomical upper and lower regional angles.
+  out[0]=wrap(tilt[2]-tilt[1]); out[1]=wrap(tilt[1]-tilt[0]);
 }
 struct Settings {
   double trigger[2]={7.5,7.5}, recovery[2]={4,4};

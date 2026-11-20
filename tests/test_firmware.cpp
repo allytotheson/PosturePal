@@ -43,14 +43,14 @@ int main() {
   assert(Wire.clockHz==400000);
   assert(Wire.motorRegs[0x17]==138);assert((Wire.motorRegs[0x1d]&0x68)==0x20);
   assert(!outputHas("upper_deg="));assert(!outputHas("SENSE"));
-  send("sense");assert(outputHas("SENSE imu=0")); // Explicit diagnostics remain available.
+  send("sense");assert(outputHas("SENSE imu=0 site=L5")); // Explicit diagnostics remain available.
   send("status");assert(outputHas("trigger=7.50,7.50 recovery=4.00,4.00 duration_ms=2000"));
   assert(Wire.motorRegs[2]==0); send("resume");assert(outputHas("ERR mounting"));
   send("mount-ok");assert(outputHas("ERR configure axes"));
   // Virtual fixture: +Z headward and -X outward -> identity mapping.
   send("axes +Z -X");send("mount-ok");assert(outputHas("SETTLING"));
   advance(5500);send("status");assert(outputHas("state=MONITORING"));assert(outputHas("baseline_valid=1"));
-  assert(outputHas("POSTUREPAL firmware=feather-v3"));
+  assert(outputHas("POSTUREPAL firmware=feather-v4-timing"));
   assert(outputHas("TIMING max_loop_us="));
   send("calibrate");advance(3200);assert(outputHas("CAL "));
   assert(!outputHas("upper_deg="));assert(!outputHas("BASELINE sag="));
@@ -146,8 +146,15 @@ int main() {
   assert(outputHas("ready=0x03 result=5"));assert(outputHas("TRACE end imu=1"));
   assert(Wire.motorRegs[2]==0);
   send("retry");advance(7000);send("status");assert(outputHas("state=MONITORING"));
+  // A USB stall must be attributable to output draining in the frozen loop trace.
+  Serial.output.clear();Serial.input="status\n";Serial.nextWriteDelayUs=20000;
+  advance(1000);assert(outputHas("usb=20000"));assert(outputHas("LOOP_TRACE end"));
+  send("retry");advance(7000);send("status");assert(outputHas("state=MONITORING"));
   // A real scheduling discontinuity remains a fault; include the sensor and duration.
-  fakeUs+=20000;advance(100);send("status");
+  Serial.output.clear();fakeUs+=20000;advance(800);
+  assert(outputHas("LOOP_TRACE at_us="));assert(outputHas("tick_gap=21000"));
+  send("timing");advance(800);assert(outputHas("tick_gap=21000"));
+  send("status");
   assert(outputHas("fault=IMU gap imu=0 gap_us="));
   assert(outputHas("limit_us=16000"));assert(Wire.motorRegs[2]==0);
   send("trace 0");advance(3500);assert(outputHas("tick_us=21000 poll_us=21000"));

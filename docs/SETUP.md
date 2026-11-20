@@ -16,9 +16,9 @@ with the driver at 0x5A.
 | Device | Mux channel | Seven-bit I2C address |
 |---|---:|---:|
 | PCA9548A | upstream | 0x70 |
-| T3 LSM6DSOX | 0 | 0x6A |
+| T3 LSM6DSOX | 2 | 0x6A |
 | T12 LSM6DSOX | 1 | 0x6A |
-| L5 LSM6DSOX | 2 | 0x6A |
+| L5 LSM6DSOX | 0 | 0x6A |
 | DRV2605L + ERM | Main bus (upstream SDA/SCL) | 0x5A |
 
 Pin these versions; do not substitute the Arduino Mbed nRF528x core:
@@ -198,8 +198,8 @@ Detailed values appear **only when explicitly requested**:
 - `status`: state, fault reason, timing maxima, driver confirmation, settings,
   baseline and mapping. `MOTOR buzz=0 motor=UNKNOWN` means stop was requested but
   not confirmed. The physical motor could still be running.
-- `sense`: three sensor lines for mounting checks; `imu=0` is T3, `imu=1` T12,
-  `imu=2` L5. Each shows `vqf_deg`, `neutral_delta_deg`, `gravity_deg`,
+- `sense`: three sensor lines for mounting checks; `imu=0` is L5, `imu=1` T12,
+  `imu=2` T3. Each shows `vqf_deg`, `neutral_delta_deg`, `gravity_deg`,
   `filter_minus_gravity_deg`, `gyro_dps`, `rest` and `mean_hz` (since initialization).
   Check `valid=1` and `neutral_valid=1` before interpreting neutral changes.
   `gravity_quiet=1` means the current acceleration norm and gyro magnitude pass
@@ -272,7 +272,7 @@ repeat after about ten seconds without moving. Compare the per-sensor rows:
 - `mean_hz` materially below 104: investigate acquisition throughput. This is an
   average since initialization and does not prove no individual samples were lost.
 
-Verify channel placement by moving each sensor separately: 0=T3, 1=T12, 2=L5.
+Verify channel placement by moving each sensor separately: 0=L5, 1=T12, 2=T3.
 On a rigid fixture, test neutral, bend, and return before testing on a wearer.
 Wait for the readings to settle before intentional `calibrate`; calibration
 changes the reference, so do not repeatedly zero it during the diagnostic test.
@@ -298,7 +298,7 @@ Use a space in these commands: `motor-on` and `motor-off` are rejected with a
 syntax reminder and do not change mode. Initialization prints an explicit mode
 banner. `buzz=1` is a software request/decision, not proof of physical vibration.
 
-Near-full-scale faults now report the zero-based IMU/channel (0=T3, 1=T12, 2=L5),
+Near-full-scale faults now report the zero-based IMU/channel (0=L5, 1=T12, 2=T3),
 source (`gyro` or `accel`), X/Y/Z sensor axis and signed raw value. The unchanged
 raw guard rejects values at or beyond +/-32000. Keep this information when
 reporting a fault; it distinguishes a gyro-rate event from an acceleration event,
@@ -349,3 +349,27 @@ gap. A sample-read result can still be rejected by later range/geometry checks.
 durations handle clock wrap. The trace adds no acquisition-path printing or
 dynamic allocation, and does not relax any fault guard or establish a cause by
 itself.
+
+## Fault timing trace (feather-v4-timing)
+
+Placement is now mux/IMU 0=L5, 1=T12, 2=T3. Board axis mapping is unchanged;
+recalibrate after uploading. Upper remains T3 minus T12; lower remains T12 minus L5.
+
+The firmware keeps the last 32 loop timing records in RAM and freezes them on
+fault. LOOP_TRACE lines print automatically after the fault, oldest first, one every
+20 ms. Save the EVENT/ERROR and all LOOP_TRACE lines before retrying. `timing` replays
+the frozen trace; `retry` clears it. No continuous trace formatting occurs during
+healthy sampling. All durations are microseconds: tick_gap is time between loop
+starts, cmd is command handling, read_us is each channel's acquisition including
+filter work, eval is posture evaluation/alert handling, maint is motor/configuration checks, diag is diagnostic formatting,
+and usb is output draining. ready_hex is the sensor status register read that
+loop (00 also means no read attempted). The final row's read duration may include
+fault handling. at_us wraps with the MCU clock. These are host polling/read times,
+not sensor sample timestamps; gaps alone cannot prove a sample was lost.
+
+Large cmd/diag/usb/maint values identify blocking work; a large tick_gap without
+matching work in the previous row suggests time outside the measured sections.
+Repeated not-ready status with fast polling suggests a sensor/data-ready issue.
+`status` includes mapping, trace state, and the cumulative log_dropped counter;
+if output was dropped, wait for the queue to drain and replay with `timing`.
+The 16 ms gap limit and filter sample period are unchanged.

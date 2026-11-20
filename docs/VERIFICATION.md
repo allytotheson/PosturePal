@@ -317,3 +317,18 @@ behavior. The target build establishes API/compile compatibility, not execution.
 
 Use [VALIDATION.md](VALIDATION.md) for the bench and wearer procedures before
 treating the report's engineering targets as achieved performance.
+
+## Reversed sensor placement and loop timing trace, 2026-11-20
+
+Updated physical mux order to 0=L5, 1=T12, 2=T3, including regional formulas,
+SENSE labels and calibration movement messages. Axis transforms are unchanged.
+Preserved upstream per-sensor polling traces and added a 32-loop integer timing
+ring covering commands, acquisition/filtering, evaluation, maintenance,
+diagnostic formatting and output draining. It freezes on fault and emits paced
+LOOP_TRACE lines; `timing` replays it before retry clears the history.
+
+All host sanitizer suites pass, including both filter precisions and the nRF BLE
+sketch configuration. Tests verify reversed regional signs/order, fault trace
+replay, a simulated USB write stall attributed to usb=20000, and an external
+20 ms scheduling gap. Feather M4 build passes (107492 bytes flash). No firmware
+was uploaded; real hardware timing behavior remains to be measured.
