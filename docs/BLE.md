@@ -106,6 +106,19 @@ The website must handle state changes, stale readings, denied/cancelled permissi
 disconnects and command errors. Use top-level HTTPS; embedded pages may also need
 the host's Bluetooth Permissions Policy. This does not add automatic cloud uploads.
 
+## nRF filter precision and timing checks
+
+The pinned nRF52840 build enables `VQF_SINGLE_PRECISION` for the sketch and
+vendored filter together. `status` should report `vqf_bits=32`. This avoids the
+filter's default 64-bit arithmetic on the Cortex-M4F and preserves all existing
+sample-gap, range, stale-data and motor fault guards. The Butterworth filter
+states remain double precision as required by upstream VQF.
+
+Use `python3 tools/build.py --board nrf52840` for the supported build. After an
+upload, verify `vqf_bits`, sampling gaps and steady-state loop/filter timing under
+BLE traffic and movement; host tests cannot establish the board's timing margin.
+The desktop app is in [desktop/](../desktop/README.md).
+
 ## Prototype limits and verification
 
 This is an **open, unbonded prototype service**: a nearby central can read telemetry
@@ -134,3 +147,9 @@ Before considering hardware integration complete:
 5. Leave the browser idle/congested, reconnect, and confirm sampling timing via
    `status` remains within limits. Check `max_loop_us`/sample gaps under radio load.
 6. Verify physical alert/stop behavior and continued monitoring after disconnect.
+
+Firmware host tests exercise both VQF precision paths and the nRF sketch with BLE
+compiled in. `tools/test.sh` defaults to AddressSanitizer plus
+UndefinedBehaviorSanitizer. If AddressSanitizer cannot initialize on the host,
+`POSTUREPAL_SANITIZERS=undefined sh tools/test.sh` runs the same checks with UBSan;
+record that validation limitation rather than claiming ASan coverage.

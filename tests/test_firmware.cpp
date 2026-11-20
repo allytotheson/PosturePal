@@ -7,6 +7,12 @@
 uint32_t fakeUs=0;
 FakeSerial Serial;
 TwoWire Wire;
+#if defined(ARDUINO_NRF52840_FEATHER)
+#include "bluefruit.h"
+FakeBluefruit Bluefruit;
+bool congested=false;
+std::string bleOutput;
+#endif
 #include "../firmware/PosturePal/PosturePal.ino"
 
 static void advance(uint32_t ms) {for(uint32_t i=0;i<ms;i++){fakeUs+=1000;loop();}}

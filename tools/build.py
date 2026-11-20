@@ -29,7 +29,10 @@ if args.board == "feather-m4":
 else:
     core, core_version = "adafruit:nrf52", "1.7.0"
     fqbn, output_name = "adafruit:nrf52:feather52840", "feather52840"
-    build_args = ["--build-property", "compiler.optimization_flag=-O2"]
+    # Cortex-M4F hardware supports float, not the VQF double default.
+    # Keep the sample/fault limits intact; verify vqf_bits=32 and timing on hardware.
+    build_args = ["--build-property", "compiler.optimization_flag=-O2",
+                  "--build-property", "compiler.cpp.extra_flags=-DVQF_SINGLE_PRECISION"]
 CLI = os.environ.get("ARDUINO_CLI") or shutil.which("arduino-cli")
 MAC_CLI = "/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli"
 if not CLI and Path(MAC_CLI).is_file():

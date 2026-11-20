@@ -33,6 +33,23 @@ static void geometry() {
   up=a.apply({0,1,0}); near(up.z,1); near(up.x,0); near(up.y,0);
   up=a.apply({0,0,1}); near(up.x,-1);
   assert(!pp::makeAlignment("+Y","-Y",a)); assert(!pp::makeAlignment("Y","+Z",a));
+  // Reversing both mounting axes adds a common half-turn, which cancels in
+  // regional differences even after a new neutral calibration.
+  const char* mounting[2][2]={{"+X","+Z"},{"-X","-Z"}};
+  const double neutral[3]={2,20,40},forward[3]={22,25,40};
+  for(const auto& axes:mounting) {
+    assert(pp::makeAlignment(axes[0],axes[1],a));
+    auto regional=[&](const double pitch[3],double out[2]) {
+      double mapped[3];
+      for(int i=0;i<3;i++) {
+        double angle=pitch[i]/pp::DEG;
+        assert(pp::sagittalTilt(a.apply({std::cos(angle),0,std::sin(angle)}),mapped[i]));
+      }
+      pp::regions(mapped,out);
+    };
+    double baseline[2],bent[2];regional(neutral,baseline);regional(forward,bent);
+    near(pp::wrap(bent[0]-baseline[0]),15);near(pp::wrap(bent[1]-baseline[1]),5);
+  }
   near(pp::wrap(359),-1); near(pp::wrap(-359),1);
   double tilt[3]={35,25,20},out[2]; pp::regions(tilt,out); near(out[0],10); near(out[1],5);
   for(int i=0;i<3;i++) tilt[i]-=20;
