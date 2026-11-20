@@ -10,6 +10,7 @@ integration, inconsistent threshold messages, combined-region timer, and
 unchecked motor writes can all contribute to missed alerts or continued buzzing.
 Changing the filter alone cannot correct mounting movement or a failed stop command.
 
+- [Native Python desktop app with BLE and local history](desktop/README.md)
 - [Feather M4 Express setup and migration notes](docs/FEATHER_M4.md)
 - [nRF52840 BLE test interface and website integration](docs/BLE.md)
 - [Complete Arduino firmware](firmware/PosturePal/PosturePal.ino)
