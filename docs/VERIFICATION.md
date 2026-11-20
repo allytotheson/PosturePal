@@ -365,3 +365,9 @@ Axis transforms remain unchanged. Host tests now also exercise isolated upper
 and lower fixture motion through the actual VQF/sketch telemetry, checking both
 region assignment and sign. Worn bend direction still requires fresh neutral
 calibration and a live movement check after uploading.
+
+The subsequent transition to a worn test produced additional raw-range faults
+before a valid worn calibration/bend check completed, followed by a device
+disconnect. Whether these events reflected movement or a remaining readout
+failure was not established. The short flat bench pass must therefore not be
+reported as a complete hardware fix or a successful worn lifecycle test.
