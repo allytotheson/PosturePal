@@ -334,3 +334,18 @@ gaps and the last data-ready state while waiting; in STATUS_REG, 0x01 means only
 accelerometer data is ready and 0x02 means only gyro data is ready (other bits may
 also be set). These counters localize a failure; they do not prove its electrical
 or sensor-internal cause. `sense` values are cached and invalid after FAULT.
+
+Before retrying a sampling fault, request `trace 0`, `trace 1` or `trace 2` for
+the affected IMU. The last 32 polls are retained in a fixed-size RAM ring and
+freeze when acquisition stops. Output is oldest-first, one row every 100 ms;
+wait for `TRACE end` before requesting another sensor. This command requires
+FAULT, and initialization clears the trace. Each row contains the board's
+`at_us`, age since the previous accepted sample, loop/poll intervals and elapsed
+bus time (before VQF), plus raw STATUS_REG and a result code: 0 waiting, 1 sample
+read, 2 mux-select failure, 3 status-read failure, 4 data-read failure, 5 sample
+gap. A sample-read result can still be rejected by later range/geometry checks.
+`ready=0xFF` is a sentinel when no status could be read. Times use the board's
+`micros()` resolution, including its coarse tick fallback on nRF; unsigned
+durations handle clock wrap. The trace adds no acquisition-path printing or
+dynamic allocation, and does not relax any fault guard or establish a cause by
+itself.
