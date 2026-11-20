@@ -85,6 +85,7 @@ class PosturePal {
   Logger log;
   State state=State::PAUSED;
   bool mountConfigured=false,mountOK=false,baselineValid=false,geometryValid=false;
+  uint32_t busHz=400000; // Diagnostic selection; default remains 400 kHz.
   bool motorEnabled=true; // Explicit sensor-only mode is RAM-only; hardware mode stays the default.
   bool have[3]={},newSample[3]={},rest[3]={};
   double accelerationNorm[3]={},tilt[3]={},regional[2]={},baseline[2]={},deviation[2]={};
@@ -181,7 +182,7 @@ class PosturePal {
     }
     // BusIO device begin() calls Wire.begin(), resetting SAMD's clock to 100 kHz.
     // Restore fast mode AFTER every device has initialized, also on retry.
-    Wire.setClock(400000);
+    Wire.setClock(busHz);
     // Initializing other sensors can leave earlier sensors holding a stale BDU sample.
     for(uint8_t i=0;i<3;i++) {
       uint8_t discard[12];
@@ -299,6 +300,7 @@ class PosturePal {
   void status() {
     log.line("POSTUREPAL firmware=feather-v3 calibration=3s-settle+2s-still vqf_bits=%u",unsigned(sizeof(vqf_real_t)*8));
     log.line("PROTOCOL version=1 transport=newline-ascii");
+    log.line("BUS_CONFIG hz=%lu",(unsigned long)busHz);
     log.line("FILTER tau_acc_s=1.0 baseline=fixed; use sense for gravity comparison");
     log.line("CAL_INFO gate=gyro-and-gravity max_speed_dps=5 max_accel_error_percent=10 max_sway_deg=2 last_blocker=%s",calWaitReason);
     log.line("TIMING max_loop_us=%lu max_filter_us=%lu max_diag_us=%lu max_command_us=%lu gap_limit_us=%lu",
@@ -327,6 +329,7 @@ class PosturePal {
     log.line("COMMANDS help | status | sense | axes <headward signed axis> <outward signed axis> | mount-ok");
     log.line("COMMANDS motor off (sensor-only) | motor on (require driver); mode resets on reboot");
     log.line("COMMANDS calibrate | pause | resume | retry | set <upperTrigger> <upperRecovery> <lowerTrigger> <lowerRecovery> <durationMs>");
+    log.line("COMMANDS bus-rate <100000|400000> (FAULT/PAUSED only; reinitializes sensors)");
     log.line("EXAMPLE axes +Y +Z only if +Y points headward and +Z outward; mount-ok then hold neutral for about 5 s");
   }
   void command(char* commandText=nullptr) {
@@ -356,6 +359,12 @@ class PosturePal {
       }
       motorEnabled=enable;motor.requested=false;motor.confirmed=pp::MotorConfirmation::UNKNOWN;
       strcpy(faultMessage,"none");initialize();return;
+    }
+    if(count==2&&!strcmp(tokens[0],"bus-rate")) {
+      if(state!=State::FAULT&&state!=State::PAUSED) { log.line("ERR bus-rate requires FAULT or PAUSED");return; }
+      if(strcmp(tokens[1],"100000")&&strcmp(tokens[1],"400000")) { log.line("ERR bus-rate must be 100000 or 400000");return; }
+      busHz=!strcmp(tokens[1],"100000")?100000:400000;
+      Wire.setClock(busHz);strcpy(faultMessage,"none");initialize();return;
     }
     if(count==1&&!strcmp(tokens[0],"retry")) { strcpy(faultMessage,"none"); initialize(); return; }
     if(state==State::FAULT) { log.line("ERR FAULT latched; use retry after correcting cause"); return; }
@@ -441,7 +450,7 @@ class PosturePal {
 
   void busDiagnostics() {
     if(scanStep>=16) return;
-    if(state!=State::FAULT) {scanStep=16;Wire.setClock(400000);return;}
+    if(state!=State::FAULT) {scanStep=16;Wire.setClock(busHz);return;}
     uint32_t hz=scanStep<8?100000:400000;
     uint8_t channel=scanStep%8;++scanStep;
     Wire.setClock(hz);
@@ -452,7 +461,7 @@ class PosturePal {
       log.line("BUS hz=%lu channel=%u addr=0x%02X read=%s id=0x%02X lsm6dsox=%d",
         (unsigned long)hz,unsigned(channel),unsigned(addr),ok?"OK":"FAIL",unsigned(id),ok&&id==0x6c);
     }
-    if(scanStep==16) {Wire.setClock(400000);log.line("BUS scan complete; send retry after correcting connections/mapping");}
+    if(scanStep==16) {Wire.setClock(busHz);log.line("BUS scan complete; send retry after correcting connections/mapping");}
   }
 
 public:
@@ -462,7 +471,7 @@ public:
   void begin() {
     Serial.begin(115200); // No wait: battery operation must not depend on a USB host.
     ppble::begin();
-    Wire.begin(); Wire.setClock(400000);
+    Wire.begin(); Wire.setClock(busHz);
     initialize(); help();
   }
   void tick() {

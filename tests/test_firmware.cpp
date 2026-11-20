@@ -166,5 +166,12 @@ int main() {
   send("retry");advance(7000);assert(Wire.motorRegs[0x17]==138);
   Wire.rawGyroX[2]=-32200;advance(100);send("status");
   assert(outputHas("source=gyro axis=X raw=-32200 limit=32000"));
+  // Bus-speed A/B diagnostics are explicit, retain fault guards, and cannot
+  // reconfigure an actively monitoring wearable.
+  Wire.rawGyroX[2]=0;send("bus-rate 100000");assert(Wire.clockHz==100000);
+  advance(7000);send("status");assert(outputHas("BUS_CONFIG hz=100000"));
+  send("bus-rate 400000");assert(outputHas("requires FAULT or PAUSED"));assert(Wire.clockHz==100000);
+  send("pause");send("bus-rate 250000");assert(outputHas("must be 100000 or 400000"));assert(Wire.clockHz==100000);
+  send("bus-rate 400000");assert(Wire.clockHz==400000);
   std::puts("PASS: actual sketch boot/mount gate, calibration, commands, common lean, alert/recovery, pause/resume, sensor/motor faults, retry, no-USB monitoring");
 }
