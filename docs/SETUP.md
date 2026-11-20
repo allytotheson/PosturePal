@@ -16,9 +16,9 @@ with the driver at 0x5A.
 | Device | Mux channel | Seven-bit I2C address |
 |---|---:|---:|
 | PCA9548A | upstream | 0x70 |
-| T3 LSM6DSOX | 2 | 0x6A |
+| T3 LSM6DSOX | 0 | 0x6A |
 | T12 LSM6DSOX | 1 | 0x6A |
-| L5 LSM6DSOX | 0 | 0x6A |
+| L5 LSM6DSOX | 2 | 0x6A |
 | DRV2605L + ERM | Main bus (upstream SDA/SCL) | 0x5A |
 
 Pin these versions; do not substitute the Arduino Mbed nRF528x core:
@@ -198,8 +198,8 @@ Detailed values appear **only when explicitly requested**:
 - `status`: state, fault reason, timing maxima, driver confirmation, settings,
   baseline and mapping. `MOTOR buzz=0 motor=UNKNOWN` means stop was requested but
   not confirmed. The physical motor could still be running.
-- `sense`: three sensor lines for mounting checks; `imu=0` is L5, `imu=1` T12,
-  `imu=2` T3. Each shows `vqf_deg`, `neutral_delta_deg`, `gravity_deg`,
+- `sense`: three sensor lines for mounting checks; `imu=0` is T3, `imu=1` T12,
+  `imu=2` L5. Each shows `vqf_deg`, `neutral_delta_deg`, `gravity_deg`,
   `filter_minus_gravity_deg`, `gyro_dps`, `rest` and `mean_hz` (since initialization).
   Check `valid=1` and `neutral_valid=1` before interpreting neutral changes.
   `gravity_quiet=1` means the current acceleration norm and gyro magnitude pass
@@ -272,7 +272,7 @@ repeat after about ten seconds without moving. Compare the per-sensor rows:
 - `mean_hz` materially below 104: investigate acquisition throughput. This is an
   average since initialization and does not prove no individual samples were lost.
 
-Verify channel placement by moving each sensor separately: 0=L5, 1=T12, 2=T3.
+Verify channel placement by moving each sensor separately: 0=T3, 1=T12, 2=L5.
 On a rigid fixture, test neutral, bend, and return before testing on a wearer.
 Wait for the readings to settle before intentional `calibrate`; calibration
 changes the reference, so do not repeatedly zero it during the diagnostic test.
@@ -298,7 +298,7 @@ Use a space in these commands: `motor-on` and `motor-off` are rejected with a
 syntax reminder and do not change mode. Initialization prints an explicit mode
 banner. `buzz=1` is a software request/decision, not proof of physical vibration.
 
-Near-full-scale faults now report the zero-based IMU/channel (0=L5, 1=T12, 2=T3),
+Near-full-scale faults now report the zero-based IMU/channel (0=T3, 1=T12, 2=L5),
 source (`gyro` or `accel`), X/Y/Z sensor axis and signed raw value. The unchanged
 raw guard rejects values at or beyond +/-32000. Keep this information when
 reporting a fault; it distinguishes a gyro-rate event from an acceleration event,
@@ -352,7 +352,7 @@ itself.
 
 ## Fault timing trace (feather-v4-timing)
 
-Placement is now mux/IMU 0=L5, 1=T12, 2=T3. Board axis mapping is unchanged;
+Verified current placement is mux/IMU 0=T3, 1=T12, 2=L5. Board axis mapping is unchanged;
 recalibrate after uploading. Upper remains T3 minus T12; lower remains T12 minus L5.
 
 The firmware keeps the last 32 loop timing records in RAM and freezes them on
@@ -373,3 +373,35 @@ Repeated not-ready status with fast polling suggests a sensor/data-ready issue.
 `status` includes mapping, trace state, and the cumulative log_dropped counter;
 if output was dropped, wait for the queue to drain and replay with `timing`.
 The 16 ms gap limit and filter sample period are unchanged.
+
+## nRF I2C transfer boundaries
+
+Build the nRF52840 firmware with `python3 tools/build.py --board nrf52840`.
+The helper verifies the SHA-256 of the pinned core's Wire source/header and
+creates a build-local Wire library beside the build directory. It does not
+modify the installed core. The generated library preserves the upstream LGPL
+notices and replaces only the master transfer methods using
+`tools/nrf_wire_master.inc`. The Feather M4 build uses its normal Wire library.
+
+The stock Adafruit nRF52 1.7.0 master driver waits for LASTRX/LASTTX in software
+before issuing STOP/SUSPEND. Nordic's [nRF52840 TWIM specification](https://docs.nordicsemi.com/r/bundle/ps_nrf52840/page/twim.html)
+states that DMA buffer completion does not stop the bus and recommends a
+LASTRX-to-STOP hardware shortcut. An interrupt at a byte boundary can delay a
+software-only stop without causing a long loop-level stall. Extra register
+reads can have sensor side effects even if DMA reports the requested count.
+This is a driver defect hypothesis for the observed readout failures; a timing
+trace alone does not prove which bytes were clocked on the physical bus.
+
+The override installs LASTRX/LASTTX STOP or SUSPEND shortcuts before START and
+waits for the completion event. Errors are stopped and cleared; failed reads
+expose no stale bytes. Empty address-only probes retain the core's existing
+software path because there is no final data byte. Interrupts remain enabled.
+No sample-gap, freshness, raw-range, calibration or motor limits are relaxed.
+
+`status` must report `BUS_DRIVER nrf52-hardware-boundaries` on the fixed nRF
+build. The build helper fails compilation if a conflicting Wire header is
+selected. A direct Arduino IDE build does not automatically include this
+override and reports `BUS_DRIVER platform-default`; use the helper for the fix.
+Host register-model tests exercise the actual replacement methods with a
+delayed CPU, repeated starts, STOP/SUSPEND, buffer bounds, NACK and recovery.
+They do not replace physical bus captures or sustained hardware testing.

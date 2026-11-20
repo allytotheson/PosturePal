@@ -48,12 +48,12 @@ static void geometry() {
       pp::regions(mapped,out);
     };
     double baseline[2],bent[2];regional(neutral,baseline);regional(forward,bent);
-    near(pp::wrap(bent[0]-baseline[0]),-5);near(pp::wrap(bent[1]-baseline[1]),-15);
+    near(pp::wrap(bent[0]-baseline[0]),15);near(pp::wrap(bent[1]-baseline[1]),5);
   }
   near(pp::wrap(359),-1); near(pp::wrap(-359),1);
-  double tilt[3]={35,25,20},out[2]; pp::regions(tilt,out); near(out[0],-5); near(out[1],-10);
+  double tilt[3]={35,25,20},out[2]; pp::regions(tilt,out); near(out[0],10); near(out[1],5);
   for(int i=0;i<3;i++) tilt[i]-=20;
-  pp::regions(tilt,out); near(out[0],-5); near(out[1],-10);
+  pp::regions(tilt,out); near(out[0],10); near(out[1],5);
 
 }
 static void alerts() {

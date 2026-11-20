@@ -332,3 +332,42 @@ sketch configuration. Tests verify reversed regional signs/order, fault trace
 replay, a simulated USB write stall attributed to usb=20000, and an external
 20 ms scheduling gap. Feather M4 build passes (107492 bytes flash). No firmware
 was uploaded; real hardware timing behavior remains to be measured.
+
+## nRF master transfer boundary candidate
+
+The pinned nRF Wire master completes transfers with CPU-triggered STOP/SUSPEND
+after LASTRX/LASTTX. A build-local, hash-checked override now uses hardware
+shortcuts for nonempty transfers, following Nordic's TWIM byte-boundary timing
+requirements. The installed core is not modified. The same replacement methods
+are executed by a register-model regression that demonstrates extra clocks
+with a delayed software-only stop and no extra clocks with hardware completion.
+NACK/error cleanup, repeated starts and bounded receives are also exercised.
+This models the proposed mechanism, not a physical waveform capture.
+
+All firmware host suites pass with UBSan; the pinned nRF52840 build succeeds
+with the override selected. On the same connected vest, the unmodified timing
+build faulted on a near-full-scale gyro value during a quiet USB-only phase
+after approximately 34 seconds. The hardware-boundary build then completed
+120 seconds USB-only followed by 180 seconds with BLE connected, with the
+motor disabled and acquisition active in PAUSED. Each IMU accepted over 31,000
+samples; recorded maximum gaps were 12.695, 13.672 and 13.672 ms, below the
+unchanged 16 ms guard. No acquisition/range fault occurred in that run.
+This supports the driver fix; it does not establish sustained reliability or
+prove a physical over-read waveform. The existing fault guards and the
+teammate's timing trace remain unchanged.
+
+Isolated movement on the connected vest subsequently confirmed physical upper
+on channel 0 and lower on channel 2 (with the middle on 1). The earlier physical
+rewiring had already corrected the order, so the reversed placement assumption
+in the timing commit is superseded for this setup. The current formulas, SENSE
+labels, status mapping and calibration messages again use 0=T3, 1=T12, 2=L5.
+Axis transforms remain unchanged. Host tests now also exercise isolated upper
+and lower fixture motion through the actual VQF/sketch telemetry, checking both
+region assignment and sign. Worn bend direction still requires fresh neutral
+calibration and a live movement check after uploading.
+
+The subsequent transition to a worn test produced additional raw-range faults
+before a valid worn calibration/bend check completed, followed by a device
+disconnect. Whether these events reflected movement or a remaining readout
+failure was not established. The short flat bench pass must therefore not be
+reported as a complete hardware fix or a successful worn lifecycle test.
